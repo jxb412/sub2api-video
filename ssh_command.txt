@@ -1,0 +1,6 @@
+set -e
+stamp=$(date +%Y%m%d_%H%M%S)
+cp -a /www/wwwroot/newapi/data/one-api.db "/www/wwwroot/newapi/backups/one-api-after-e2e-audit-$stamp.db"
+tar --exclude='./web/node_modules' --exclude='./web/dist' -czf "/www/wwwroot/newapi/backups/newapi-src-after-e2e-audit-$stamp.tgz" -C /www/wwwroot/newapi-src .
+sqlite3 /www/wwwroot/newapi/data/one-api.db "select count(*) from users where id=1 and access_token is not null; select count(*) from tokens where deleted_at is null;"
+ls -lh "/www/wwwroot/newapi/backups/one-api-after-e2e-audit-$stamp.db" "/www/wwwroot/newapi/backups/newapi-src-after-e2e-audit-$stamp.tgz"

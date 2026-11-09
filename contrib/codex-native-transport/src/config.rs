@@ -1,0 +1,1258 @@
+//! 插件配置：严格解析（拒绝未知字段），空配置规范化为完整默认值。
+
+use serde::{Deserialize, Serialize};
+
+/// 与宿主/前端账号套餐展示口径一致：忽略大小写及空格/下划线/连字符，合并已知别名。
+pub fn normalize_plan_type(value: &str) -> String {
+    let compact: String = value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| !matches!(ch, ' ' | '_' | '-'))
+        .collect();
+    match compact.as_str() {
+        "chatgptpro" => "pro".to_string(),
+        "selfservebusinessprolite" => "self_serve_business_prolite".to_string(),
+        "" => String::new(),
+        other => other.to_string(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PluginConfig {
+    /// 强制 HTTP/1.1（默认 false：与真实 Codex 一致走 ALPN h2）。
+    pub force_http11: bool,
+    /// 连接建立超时（秒）。0 表示不设置——与 Codex 默认 client 一致。
+    pub connect_timeout_seconds: u32,
+    /// 指纹隔离总开关：
+    /// - true  = 一账号一指纹：每个账号有恒定且互不相同的 installation-id，
+    ///           Cloudflare cookie jar 也按账号隔离（一账号一设备）。
+    /// - false = 统一指纹：所有账号共用同一个稳定 installation-id 和共享 cookie jar
+    ///           （整个网关对外表现为同一台设备）。
+    /// None 表示旧配置未设置，normalize 时由旧字段推导。
+    pub per_account_fingerprint: Option<bool>,
+    /// 一并发一套 ID（应对同一 OAuth 账号多路并发触发 server_is_overloaded）：
+    /// 开启后，每条出站 Codex 请求签发一套独立标识——
+    /// session-id / thread-id / x-client-request-id 共用一个新 UUIDv7（与真实
+    /// codex 三头同值的行为一致），installation-id 换成独立随机值，并剥离
+    /// x-codex-turn-state 避免脏会话粘连；头与 body client_metadata 同步改写。
+    /// 代价：会话延续（turn-state / 远端 compaction 粘连）失效。默认关闭。
+    pub one_id_per_request: bool,
+    /// 兼容保留（已被 per_account_fingerprint 接管，normalize 时写穿）。
+    pub per_account_cookie_jar: bool,
+    /// 请求体缓冲上限（MB）。真实 Codex 以 Content-Length 发送完整 JSON 体，
+    /// 插件同样先缓冲以保证不退化为 chunked 传输。
+    pub max_request_body_mb: u32,
+    /// reqwest client 缓存上限（按 账号 × 代理 × 协议 组合缓存，LRU 淘汰）。
+    pub max_cached_clients: u32,
+    /// 内嵌管理面板监听地址（空 = 关闭面板）。
+    /// 例：`127.0.0.1:8848`（仅本机）、`0.0.0.0:8848`（对外，务必配强 token）。
+    pub panel_addr: String,
+    /// 面板访问 token（空 = 面板不启动，绝不无鉴权暴露）。支持 `?token=` 或 Bearer。
+    pub panel_token: String,
+    /// 宿主 Sub2API admin API 基址（插件通常与宿主同容器：http://127.0.0.1:8080）。
+    pub admin_api_base: String,
+    /// 宿主 admin API key（请求头 `x-api-key`）。仅内存流转，随配置加密存储于 DB。
+    pub admin_api_key: String,
+    /// 账号智力巡检（降智检测）总开关。默认关。
+    pub intel_enabled: bool,
+    /// 巡检关注的套餐类型（空 = 全部）。比较前按 normalize_plan_type 归一化。
+    pub intel_plan_types: Vec<String>,
+    /// 巡检使用的模型（空 = gpt-6-astra）。
+    pub intel_model: String,
+    /// 巡检提问（空 = 默认知识库日期问题）。
+    pub intel_prompt: String,
+    /// 额外的不合格关键词（可多个，逗号 / 竖线分隔；空 = 不做关键词判定）。
+    ///
+    /// 运营口径改成「早于 `intel_degraded_before_year` 的年份 = 降智、拒答 = 正常」之后，
+    /// 这一项默认留空：年份规则已经覆盖了「答 2024」这种典型降智特征，再挂一个 `2024`
+    /// 关键词只是同一件事说两遍。留空后想临时加词（某个模型特有的敷衍措辞）仍可在此填。
+    pub intel_fail_marker: String,
+    /// 自动循环巡检开关。关 = 只在面板里手动触发。
+    pub intel_loop_enabled: bool,
+    /// 自动巡检间隔（秒，钳到 60..=86400）。
+    pub intel_loop_interval_seconds: u32,
+    /// 巡检并发（钳到 1..=16）。
+    pub intel_concurrency: u32,
+    /// 不合格 → 自动暂停该号调度；恢复合格 → 自动开启调度。
+    /// 面板里对单个账号开启「自动降智处理」后，该号不参与自动暂停（改走降智通道）。
+    pub intel_auto_pause: bool,
+    /// 巡检结论落盘路径（空 = 不落盘）。建议指向挂载卷。
+    pub intel_state_path: String,
+    /// 巡检单次请求超时（秒，5..=600）。
+    pub intel_prompt_timeout_seconds: u32,
+    /// 巡检失败重试次数（0..=5，总尝试次数 = 该值 + 1）。
+    pub intel_prompt_retries: u32,
+    /// 巡检超时是否按「不合格」处理（默认 true）。
+    pub intel_timeout_is_failed: bool,
+    /// 连续合格多少次才允许切回正常通道（1..=10）。
+    pub intel_confirmations: u32,
+    /// 巡检回答里必须出现年份（19xx/20xx），否则判不合格。
+    ///
+    /// ⚠️ 只在 `intel_degraded_before_year = 0`（关掉年份下限判定）时生效。
+    /// 运营口径是「不降智的号会拒答」，拒答本来就不带年份，两条规则互斥，
+    /// 默认关闭。
+    pub intel_require_year: bool,
+    /// 降智年份下限（默认 2026，0 = 关闭该判定）。
+    ///
+    /// 运营实测口径：不降智的模型对这个提问会**拒答**（「我无法确认自己的知识截止
+    /// 日期」），一旦报出早于该年份的日期（典型「2024 年 6 月」），说明这次请求被
+    /// 上游路由到了降智模型。所以：回答里出现 < 该年份的日期 → 不合格；拒答 /
+    /// 不报日期 → 合格。
+    ///
+    /// 2026-10 实测：BPS 通道与正常通道、本机出口 / 142 / 107 两个代理池出口共 38 次
+    /// 采样全部是「2024 年 6 月」，只有 1 次拒答，即当时上游两边都在降智。
+    pub intel_degraded_before_year: u16,
+    /// 判定合格后仍在 BPS 通道保持多久（秒，0 = 立刻允许切回）。
+    pub bps_hold_after_healthy_seconds: u32,
+    /// 会话粘滞：同一会话用过 BPS 之后，空闲多久内继续走 BPS（秒，0 = 关闭）。
+    pub bps_session_sticky_seconds: u32,
+    /// BPS 出站失败后的冷却（秒）：冷却期内该号不再尝试 BPS。
+    ///
+    /// 这是「其它状态码」的兜底值（402 / 5xx / 未知）。按状态码分类的冷却见
+    /// 下面几项；分类值为 0 表示该类**不冷却**（下一个请求立刻再试）。
+    pub bps_fallback_cooldown_seconds: u32,
+    /// 传输层失败 / 超时（没有任何 HTTP 状态码）的冷却（秒，0 = 不冷却）。
+    pub bps_cooldown_timeout_seconds: u32,
+    /// 上游 HTTP 400（协议 / 请求体形态问题）的冷却（秒，0 = 不冷却）。
+    pub bps_cooldown_400_seconds: u32,
+    /// 上游 HTTP 401（凭据失效）的冷却（秒，0 = 不冷却）。
+    pub bps_cooldown_401_seconds: u32,
+    /// 上游 HTTP 403（BPS 侧「usage policy」拦截，实测是账号级稳定拒绝）的
+    /// 冷却（秒，0 = 不冷却）。这类失败重试基本必失败，建议设长一些
+    /// （例如 3600~86400），免得每个请求都先白撞一次 BPS 再回退。
+    pub bps_cooldown_403_seconds: u32,
+    /// 上游 HTTP 429（BPS 限流）的冷却（秒，0 = 不冷却）。
+    pub bps_cooldown_429_seconds: u32,
+    /// BPS 403 自动摘除模型（默认开）。
+    ///
+    /// BPS 端点回 403（账号被上游 usage policy 拦截）时，把这个账号上配置的
+    /// `bps_403_drop_models` 里的模型从宿主账号的模型名单（credentials 的
+    /// model_whitelist / model_mapping）中摘掉，让宿主调度器不再把这些模型
+    /// 派给这个号（同分组其它账号照常接）。摘除时长到点后自动加回来。
+    pub bps_403_drop_models_enabled: bool,
+    /// 403 时要摘除的模型列表（空 = gpt-6-astra + gpt-5.6-sol）。
+    pub bps_403_drop_models: Vec<String>,
+    /// 摘除保持时长（秒，0 = 跟随 bps_cooldown_403_seconds）。
+    pub bps_403_drop_models_seconds: u32,
+    /// 每账号每日 BPS 调用上限（0 = 不限）。
+    ///
+    /// 只在真实业务请求**真正发往 BPS**时计数（面板「BPS 自检」不计入），
+    /// 达到上限的账号当天不再尝试 BPS、直接走正常通道，按 UTC 日切归零。
+    pub bps_daily_limit_per_account: u32,
+    /// 降智账号 BPS 通道总开关（默认关）。开启后，面板里勾了
+    /// 「自动降智处理」的账号，其 bps_models 请求改走 BPS 端点。
+    pub bps_enabled: bool,
+    /// BPS 端点地址。
+    pub bps_endpoint: String,
+    /// 走 BPS 通道的模型列表（空 = gpt-6-astra + gpt-5.6-sol）。
+    pub bps_models: Vec<String>,
+    /// BPS 请求参数形态：
+    /// native  = 当前生产参数，带 developer shim、model_selection、metadata 与
+    ///           prompt_cache_key（默认）；
+    /// minimal = 精简中转 A/B 参数，只发送 model/input/stream/store/
+    ///           reasoning_effort/metadata，纯对话不注入 developer shim，也不发送
+    ///           model_selection / prompt_cache_key / context_management。工具请求
+    ///           仍按 bps_tool_mode 保证可用；metadata 是 BPS 必填校验，不能省略。
+    /// 该选项用于验证中转参数是否影响上游路由，默认保持 native。
+    pub bps_request_style: String,
+    /// BPS 工具桥接方案（默认 text）：
+    /// text     = 客户端工具目录 + 一行 JSON 文本协议，历史工具项转文本（默认）；
+    /// native   = 历史 function_call / function_call_output 保持原生 item 形状回放，
+    ///            新调用仍走文本协议（ghcp_proxy 的 native item 路线）；
+    /// officejs = 历史原生回放 + 让模型用上游 Excel 插件的 run_officejs 当运货卡车，
+    ///            代理从 code 字段还原真实客户端工具调用；
+    /// declared = 把客户端 function / custom 工具写成 input 里的 additional_tools 条目，
+    ///            上游原生注册，模型直接发客户端工具名的 function_call / custom_tool_call
+    ///            （历史与回程都不改写；上游对顶层 tools 仍 422，所以必须走 input 条目）。
+    pub bps_tool_mode: String,
+    /// 客户端工具目录放到提示词末尾（默认 false = 目录前置 + 末尾短提醒）。
+    pub bps_catalog_at_prompt_end: bool,
+    /// 是否把客户端的 prompt_cache_key 转发给 BPS（默认 true）。
+    pub bps_forward_prompt_cache_key: bool,
+    /// 转发时把客户端的 prompt_cache_key 换成「按账号作用域派生」的 UUID 形态假名
+    /// （默认 true）。关掉 = 原样透传（旧行为），用于 A/B 验证缓存命中率。
+    pub bps_pseudonym_prompt_cache_key: bool,
+    /// BPS `metadata` 里附带 `agent_iteration`（默认 true，与 Excel 插件真实出站和
+    /// ghcp_proxy 参考实现一致）。上游若拒绝这个键，关掉即可。
+    pub bps_metadata_agent_iteration: bool,
+    /// BPS 出站 `Origin` 头（默认 `https://bps.openai.com`；留空 = 不发送）。
+    pub bps_origin: String,
+    /// BPS 出站 `User-Agent`：默认空 = 保持客户端原样；`browser` = `Mozilla/5.0`
+    /// 的浏览器 UA 实验档；其它值原样发送。用于 Origin / 浏览器 UA 的 A/B 实验。
+    pub bps_user_agent: String,
+    /// 推理挡位自愈（默认 true）。客户端按过期能力表挑了上游不认的挡位时
+    /// （现网最大一类 400：`minimal` + gpt-5.5），按上游错误里给出的支持列表
+    /// 换成最接近的一档重发一次，并记住这个组合。
+    pub effort_retry_enabled: bool,
+    /// 给 BPS 请求附带 context_management 压缩阈值（0 = 不发送，默认 0）。
+    pub bps_context_management_threshold: u32,
+    /// https 图片豁免（默认 true）：`input_image` 的 `image_url` 是绝对 https
+    /// 地址且不带 file_id 时原样带给 BPS 网关（由网关自己下载）；`data:` base64
+    /// 与带 file_id 的图片上游一律 422，仍按原规则删掉换占位文本。
+    /// 思路来自 ranxi2001/sub2api 内置 BPS 线路的 images.go 与
+    /// codex-basispoints-transport 的 keep_https_images。
+    pub bps_keep_https_images: bool,
+    /// 带附件请求跳过 BPS（默认 true）：出站前发现输入里有 BPS 收不了的附件
+    /// （base64 图片 / 文件 / file_id 图片）时，这条请求直接走账号正常的 Codex
+    /// 通道，而不是把附件悄悄丢成占位文本。代价是该条请求不吃降智兜底，
+    /// 换来的是客户截图 / 文件不再丢。
+    pub bps_skip_on_media: bool,
+    /// 带动态工具请求跳过 BPS（默认 true）：请求里声明了 `tool_search`（顶层
+    /// `tools[]`、`namespace` 子工具或 Responses Lite 的 `additional_tools` 条目），
+    /// 或者输入里带了 `tool_search_call` / `tool_search_output` 项时，这条请求直接
+    /// 走账号正常的 Codex 通道，不再改道 BPS。
+    ///
+    /// 原因：BPS 通道会把顶层 `tools` 摘掉、改用 `additional_tools` 重新注册，
+    /// 回程又会抑制 `tool_search_call` / `tool_search_output` 这类 item，客户端
+    /// 的动态工具发现（tool_search）在 BPS 上必然失效（表现为模型「不动手」）。
+    /// 代价是该条请求不吃降智兜底，换来的是动态工具能真正跑起来。
+    pub bps_skip_on_dynamic_tools: bool,
+    /// 带 previous_response_id 请求跳过 BPS（默认 true）：请求体里出现非空
+    /// `previous_response_id` 时，这条请求走账号正常的 Codex 通道。
+    ///
+    /// 原因：BPS 上游是严格白名单，`previous_response_id` 会被 422 拒掉，
+    /// 插件只能把字段剥掉再发。对「靠服务端状态续写」的客户端（每轮只发
+    /// 增量 input + 上一轮 id）剥掉就等于丢掉全部历史，表现为对话上下文
+    /// 接不上；官方 Codex 的 HTTP 请求体里没有这个字段，所以正常 Codex
+    /// 客户端不受影响（WS 增量请求带这个字段，但插件只处理 HTTP）。
+    pub bps_skip_on_previous_response_id: bool,
+    /// 命中上一条门禁后，把整个会话钉在正常通道多久（秒，0 = 只跳本条、
+    /// 不钉会话）。
+    ///
+    /// 只跳单条会出现「同一会话前几轮走 BPS、后面几条走正常通道」的撕裂：
+    /// 上游会话状态分成两套，客户端照样接不上上下文。钉住之后该会话
+    /// （账号 + 会话键）在窗口内一律走正常通道，直到窗口过期。
+    pub bps_previous_response_pin_seconds: u32,
+    /// BPS 仅对官方 Codex 客户端生效（默认 true）：UA / originator 未命中
+    /// sub2api 官方客户端集合的请求（WorkBuddy、OpenClaw 等第三方客户端）
+    /// 一律走账号正常通道，不进 BPS 降智兜底。
+    ///
+    /// 原因：BPS 是 ChatGPT 官方 Excel/Work 插件的内部端点，上游会给每条请求
+    /// 注入自己那套约 1.7 万 token 的系统上下文与账号级人设。官方 Codex 客户端
+    /// 的请求体自带完整会话与系统提示，注入只是白耗缓存；而第三方聊天客户端
+    /// （尤其 instructions 为空的）会被那套上下文盖掉，客户问「今天星期几」
+    /// 可能收到 "How can I help you today?" 或上游自带的人设问候（含账号主人
+    /// 名字），表现为答非所问 / 串人设。关掉即恢复旧行为（所有客户端都可走 BPS）。
+    pub bps_official_client_only: bool,
+    /// 回程清洗（默认 true）：BPS 网关在 `response.created` / `in_progress` /
+    /// `completed` 等事件里把它自己的 47 KB Excel 系统提示（`instructions`）与
+    /// 21 个网关工具（`tools`）原样回显，既泄露网关内部提示词又白耗下行带宽
+    /// （每个事件约 73 KB）。开启后把这些键换回客户端请求里的原值。
+    /// 思路来自 codex-basispoints-transport 的 scrub_response_echo。
+    pub bps_scrub_echo: bool,
+    /// 用量归一化（默认 true）：BPS 的 usage 多一个
+    /// `input_tokens_details.cache_write_tokens`（实测一次 17634 输入里 17566 是
+    /// cache_write），宿主把它当 Anthropic 式「缓存写入」从输入里扣掉，结果每次
+    /// 只按几十个输入 token 计费。OpenAI 正规接口的 usage 只有 `cached_tokens`，
+    /// 删除这些键后按普通输入计费（与正常 Codex 线路一致）。
+    /// 思路来自 codex-basispoints-transport 的 normalize_usage。
+    pub bps_normalize_usage: bool,
+    /// 奥特曼变阻器（对外 usage 计量覆盖，默认关）。
+    ///
+    /// 移植自 C2A V41 的 `altman_resistor`：只改**回给宿主**的 usage 计量，
+    /// 不改上游请求、不改模型输出、不碰真实缓存。开启后按
+    /// `altman_resistor_percent` 把上报的缓存读取改写成
+    /// `floor(总输入 × 百分比 / 100)`，剩余输入仍算普通输入（与可保留的缓存写入），
+    /// 三个输入桶相加始终等于原总输入；`input_tokens` / `total_tokens` 不动。
+    /// 原始 usage 缺总输入、超出 u64、或明细自相矛盾时不改写。
+    /// 作用面是回程改写链路（BPS 通道的流式与非流式响应 + 正常通道的回程过滤层）。
+    pub altman_resistor_enabled: bool,
+    /// 变阻器百分比（0..=99，默认 90）：上报缓存读取占总输入的比例。
+    ///
+    /// 这是**计量口径**，不代表真实命中率；0 = 全部按普通输入计费，
+    /// 99 = 几乎全部算缓存读取（余下至少留 1% 给普通输入桶）。
+    pub altman_resistor_percent: u8,
+    /// 变阻器触发门限（0..=100，默认 0 = 不设门限）。
+    ///
+    /// 大于 0 时**只改写缓存占比超过该值的请求**，其余原样放行：
+    /// 例如 `above=95` + `percent=90` = 「命中超过 95% 的压到 90%，命中不高的不动」。
+    /// 这比一刀切更能避免把真实命中偏低的会话反向改写。
+    pub altman_resistor_above_percent: u8,
+    /// BPS 出站附带完整 Excel/Basis-Points 官方客户端 profile 头（默认 true）。
+    ///
+    /// 参考实现 Roins-hub/sub2api-oai-basispoints（CPA 插件 v0.2.8 端口）出站会带一整套
+    /// `x-openai-internal-basispoints-client-*` / `x-openai-internal-basispoints-office-*`
+    /// / `x-stainless-*` 与 `user-agent: oai-basispoints/<版本>`，让上游把请求认成官方
+    /// Excel 插件；我们此前只带 auth-mode / accept-encoding / origin。
+    /// 注意焚决（Fenjue-Windows）的实测结论：用公开插件的完整契约（含官方 stream /
+    /// user / tools version 字段）真实生成时仍返回
+    /// `403 This request was blocked by our usage policy`，说明 403 不是靠补头就能解决；
+    /// 这里只是把出站 profile 对齐到参考实现，做成开关方便 A/B。
+    pub bps_excel_client_profile: bool,
+    /// 429 冷却优先采用上游 `Retry-After`（秒数或 HTTP 日期，钳到 1 秒..2 小时；
+    /// 默认 true）。关掉 = 只用 `bps_cooldown_429_seconds`。
+    pub bps_honor_retry_after: bool,
+    /// 带托管工具请求跳过 BPS（默认 true）。
+    ///
+    /// BPS 收不了 OpenAI 托管工具：实时联网（`web_search` 且
+    /// `external_web_access=true`，或 `search_context_size=high`）、声明
+    /// `image_generation`，以及 `tool_choice` 强制这些工具的请求，命中就走账号正常通道。
+    /// Codex CLI 默认附带的「仅缓存搜索」声明（`external_web_access=false`）不触发，
+    /// `tool_choice: "none"` 也不触发。
+    pub bps_skip_on_hosted_tools: bool,
+    /// BPS 流内失败事件的账号保护（默认 true）。
+    ///
+    /// 输出开始后 BPS 才失败时，上游会在 SSE 里发 `error` / `response.failed`。宿主
+    /// （openAIStreamFailedEventSemanticStatus）读到 401/403/429/529 或
+    /// rate_limit / permission / account_disabled 这类信号时会处罚整个 OAuth 账号。
+    /// 开启后把这些事件改写成中性的 `server_error` + `basispoints_unavailable`
+    /// （原始状态码只留在宿主不读取的 `upstream_status`），让宿主不进账号级处罚；
+    /// 不带账号信号的请求类错误（如 `context_length_exceeded`）原样放行。
+    pub bps_protect_account_status: bool,
+    /// BPS 流式响应保活帧间隔（秒，0 = 关，默认 15）。
+    ///
+    /// 宿主对上游 SSE 有 `gateway.stream_data_interval_timeout`（默认 180 秒）静默超时，
+    /// 超时会按整个 OAuth 账号记一次流超时（HandleStreamTimeout，可能临时不可调度）。
+    /// 模型长思考时上游可能长时间不吐字节，这里按间隔补一个 SSE 注释帧 `: keepalive`
+    /// （SSE 客户端忽略注释，宿主把它算作一次上游读取）把静默打断。
+    /// 思路来自 Roins 插件的 stream_keepalive_seconds。
+    pub bps_keepalive_seconds: u32,
+    /// BPS 连接层出现 HTTP/2 故障后自动降级 HTTP/1.1（默认 true）。
+    ///
+    /// 现网见过一类失败：`PLUGIN_UPSTREAM_CONNECT: upstream connection or proxy tunnel
+    /// failed`，追下去是 h2 连接层问题（GOAWAY / stream error / 帧错误），换成
+    /// HTTP/1.1 立刻恢复。参考实现 Roins 插件也是这么做的：BPS 连接出现 HTTP/2
+    /// 连接层故障后，该出口 60 秒内改用 HTTP/1.1，到期自动切回。
+    /// 只对 BPS 连接生效，且按出口（代理串）分别记住，不影响同账号的正常 Codex 通道。
+    pub bps_http2_fallback: bool,
+    /// 每账号「自动降智处理」开关的落盘路径（空 = 复用 intel_state_path 同目录）。
+    pub degrade_state_path: String,
+    /// BPS 授权（官方 Excel 插件 OAuth）总开关（默认关）。
+    ///
+    /// 打开后：面板的「BPS 授权」页可以对每个账号填一次密码 / TOTP，插件自动完成
+    /// 官方 Excel 加载项的 OAuth 授权，并在 BPS 出站时用这份 Excel 凭据替换宿主的
+    /// Codex bearer。原因是 BPS 端点只认 Excel 那一路 OAuth（client_id
+    /// `app_fnr0pYvVwwFDocDumLG3H2Bp`）：同账号对照实测，Codex token → 403，
+    /// Excel token → 200，补 UA / 补 scope / 改指纹都换不来 200。授权本身跑在宿主机的
+    /// `bps-auth` 服务里（见 contrib/bps-auth），插件只保存材料与凭据、负责刷新。
+    pub bps_auth_enabled: bool,
+    /// bps-auth 服务的地址（默认 `http://127.0.0.1:18770`）。
+    ///
+    /// 两种部署对应两个值：宿主机 systemd 装法（contrib/bps-auth/install.sh）保持
+    /// 回环地址；侧车容器装法（contrib/bps-auth/run-container.sh，挂到 Sub2API 同一个
+    /// docker 网络）填 `http://bps-auth:18770`。
+    pub bps_auth_service_url: String,
+    /// bps-auth 服务的共享 token（`/etc/bps-auth.env` 里的 `BPS_AUTH_TOKEN`）。
+    pub bps_auth_service_token: String,
+    /// 密码 / 凭据的落盘路径（空 = 复用 intel_state_path 同目录下的 bps-auth.json）。
+    pub bps_auth_state_path: String,
+    /// BPS 出站改用 Excel access_token（默认 true，仅 `bps_auth_enabled` 打开时生效）。
+    /// 关掉 = 只做授权与刷新、仍然用宿主 bearer（用于对照 A/B）。
+    pub bps_auth_use_for_bps: bool,
+    /// 自动用 refresh_token 轮换（默认 true）。关掉后凭据过期只能手动重新授权。
+    pub bps_auth_auto_refresh: bool,
+    /// 提前多少秒刷新（默认 3600，即到期前 1 小时换新）。
+    pub bps_auth_refresh_margin_seconds: u32,
+    /// 后台刷新巡检周期（秒，默认 300，下限 60）。
+    pub bps_auth_refresh_interval_seconds: u32,
+    /// 单次授权超时（秒，默认 300；授权要过 Cloudflare 校验，通常 60~150 秒）。
+    pub bps_auth_login_timeout_seconds: u32,
+    /// 授权用的出口代理（空 = 直连；机房 IP 常过不了 Cloudflare 校验，建议填住宅代理池）。
+    pub bps_auth_proxy_url: String,
+    /// 从宿主账号备注（notes）里读 BPS 登录材料：`邮箱----密码----TOTP`。
+    ///
+    /// 运营把账号的登录材料写进 Sub2API 账号的「简介 / 备注」字段（可以夹在别的
+    /// 说明文字里），插件按 `bps_auth_notes_sync_seconds` 周期调宿主管理 API 抓回来，
+    /// 自动写进凭据仓并按需触发一次 BPS 授权。备注里没有材料的账号保持原样
+    /// （可以继续在面板手填），不会因为备注为空就把已有材料清掉。
+    pub bps_auth_notes_enabled: bool,
+    /// 备注里有材料、但账号还没有可用 Excel 凭据时，自动跑一次授权（默认 true）。
+    pub bps_auth_notes_auto_login: bool,
+    /// 备注同步周期（秒，钳到 60..=86400，默认 300）。
+    pub bps_auth_notes_sync_seconds: u32,
+    /// 没有可用 Excel 凭据的账号跳过 BPS、直接走正常通道（默认 true）。
+    ///
+    /// BPS 端点只认官方 Excel 插件那一路 OAuth：宿主 bearer 打过去一律 403（实测），
+    /// 而 403 会连带触发「自动摘除模型」，把账号上的模型摘 6 小时。
+    ///
+    /// 这个门禁**不受 BPS 授权总开关影响**（`bps_auth_use_for_bps` 为 false 时除外，
+    /// 那表示明确要求沿用宿主 bearer）：总开关关着时没有任何账号有 Excel 凭据，
+    /// 等价于 BPS 通道整体停用，不会再拿宿主 bearer 去撞 403。
+    pub bps_auth_skip_without_material: bool,
+    /// 批量授权（面板「批量登录 BPS」与备注自动授权共用）的并发数（默认 2，钳到 1..=8）。
+    ///
+    /// bps-auth 服务自己也有并发上限（`BPS_AUTH_CONCURRENCY`，默认 2），插件这侧压在
+    /// 它附近即可：超出的请求只会在服务端排队，一次压太多反而让每个授权都变慢。
+    pub bps_auth_batch_concurrency: u32,
+    /// 「一个账号一个登录出口」的代理模板（空 = 用账号自己的 / 全局 `bps_auth_proxy_url`）。
+    ///
+    /// 授权要过 `auth.openai.com` 的 Cloudflare 校验：同一个出口连着登好几个账号容易被
+    /// 判成机器。填了模板后，每次授权都按它现算一个代理，例（我们的随机 IPv6 代理容器）：
+    /// `http://acct{account}-{rand}:65423140@142.54.187.42:49000`。
+    /// 占位符：`{account}` = 账号 id，`{rand}` = 8 位随机十六进制。
+    /// 不带 `{rand}` 时同一个账号每次都用同一个出口（代理容器按用户名发一张 30 天租约的
+    /// 独立 IPv6）；带上 `{rand}` 则每次授权换一个新出口（旧租约到期自动回收）。
+    pub bps_auth_proxy_template: String,
+    /// 出口连不通时按优先级往下回退（默认 true）。
+    ///
+    /// 候选顺序：账号自己的代理 → 一账号一出口模板 → 全局 `bps_auth_proxy_url` → 直连。
+    /// 开着时每次授权前先拿候选出口探一次（`https://api64.ipify.org`，20 秒超时），
+    /// 用第一个能连通的，并把「实际用了哪个出口、为什么换」写进面板的账号行。
+    /// 关掉 = 盲用优先级最高的那个（旧行为），模板写错就整批授权失败。
+    pub bps_auth_proxy_fallback: bool,
+    /// 跨机状态同步总开关（默认关）。
+    ///
+    /// 两台服务器共用同一批账号（同一份 PG）时，同一个账号在两台上是同一个上游
+    /// 身份，面板上的「自动降智处理」开关理应对两台都生效。开启后，本机的开关
+    /// 变化会立刻推给 `sync_peers` 里的对端面板，并按 `sync_interval_seconds`
+    /// 周期对账；按 `enabled_at_ms` 时间戳取新（last-write-wins）。
+    pub sync_enabled: bool,
+    /// 对端面板地址列表（逗号分隔），例：
+    /// `http://142.54.187.42:8848, http://107.150.62.202:8848`。
+    pub sync_peers: Vec<String>,
+    /// 对端鉴权 token（空 = 复用 panel_token）。两台建议用同一个强随机 token。
+    pub sync_token: String,
+    /// 对账周期（秒，0 = 只在本地改动时即时推，不做周期对账；上限 3600）。
+    pub sync_interval_seconds: u32,
+    /// 是否把本机状态推给对端（默认 true）。关掉 = 纯接收端：本机的开关改动
+    /// 不再外推，但仍然接受对端推来的状态。适合「一台服务器为准、其它只跟随」
+    /// 的部署（例如 142 当主服务器）。
+    pub sync_push: bool,
+    /// 出站身份 Profile。
+    pub identity: IdentityConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct IdentityConfig {
+    /// passthrough | machine
+    /// passthrough：不改变宿主已经生成的会话/缓存身份。
+    /// machine：按账号种子对下游会话身份做稳定 1:1 假名化，同时保留会话边界。
+    pub fingerprint_mode: String,
+    /// passthrough | codex_cli | codex_desktop | opencode | pi | custom
+    /// passthrough（默认）：完全信任宿主的身份收口，不做边缘改写。
+    pub profile: String,
+    /// profile=custom 时的 originator。
+    pub custom_originator: String,
+    /// profile=custom 时的 UA 模板，支持 {version} {os} {terminal} 占位符。
+    pub custom_user_agent_template: String,
+    /// UA 模板的 {os} 段。
+    pub os_segment: String,
+    /// UA 模板的 {terminal} 段。
+    pub terminal_segment: String,
+    /// x-openai-internal-codex-residency 头（空 = 不发送；官方目前仅 "us"）。
+    pub residency: String,
+    /// machine 模式下移除当前 Codex 已不发送的遗留身份头。
+    pub strip_non_native_identity_headers: bool,
+    /// machine 模式下根据最终 User-Agent 的系统类型校正 turn metadata sandbox。
+    pub align_sandbox_with_user_agent: bool,
+    /// 兼容保留（已被顶层 per_account_fingerprint 接管，normalize 时写穿）。
+    pub per_account_installation_id: bool,
+    /// 派生 installation id 的本地种子（安装后自动生成，一般无需修改）。
+    pub installation_id_seed: String,
+    /// 版本自动同步（npm registry @openai/codex）。
+    pub version_auto_sync: bool,
+    /// 同步间隔（小时）。
+    pub version_sync_interval_hours: u32,
+    /// auto_sync 关闭或尚未同步成功时使用的版本号。
+    pub pinned_version: String,
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        Self {
+            fingerprint_mode: "passthrough".to_string(),
+            profile: "passthrough".to_string(),
+            custom_originator: String::new(),
+            custom_user_agent_template: String::new(),
+            os_segment: crate::identity::default_os_segment().to_string(),
+            terminal_segment: crate::identity::default_terminal_segment().to_string(),
+            residency: String::new(),
+            strip_non_native_identity_headers: true,
+            align_sandbox_with_user_agent: true,
+            per_account_installation_id: false,
+            installation_id_seed: String::new(),
+            // 自动同步只会更新 UA/version 文本，不会更新编译进二进制的 TLS/HTTP2
+            // 依赖版本；默认关闭，避免产生“版本号已升级、网络栈未升级”的混合特征。
+            version_auto_sync: false,
+            version_sync_interval_hours: 6,
+            pinned_version: "0.153.4".to_string(),
+        }
+    }
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            force_http11: false,
+            connect_timeout_seconds: 0,
+            // 多账号网关默认隔离连接池、installation id 与 Cloudflare cookie。
+            per_account_fingerprint: Some(true),
+            one_id_per_request: false,
+            per_account_cookie_jar: true,
+            max_request_body_mb: 128,
+            max_cached_clients: 256,
+            panel_addr: String::new(),
+            panel_token: String::new(),
+            admin_api_base: "http://127.0.0.1:8080".to_string(),
+            admin_api_key: String::new(),
+            intel_enabled: false,
+            intel_plan_types: Vec::new(),
+            intel_model: "gpt-6-astra".to_string(),
+            intel_prompt: "你在知识库日期 不允许联网快速回答".to_string(),
+            intel_fail_marker: String::new(),
+            intel_loop_enabled: false,
+            intel_loop_interval_seconds: 3600,
+            intel_concurrency: 4,
+            intel_auto_pause: false,
+            intel_state_path: String::new(),
+            intel_prompt_timeout_seconds: 45,
+            intel_prompt_retries: 1,
+            intel_timeout_is_failed: true,
+            intel_confirmations: 1,
+            intel_require_year: false,
+            intel_degraded_before_year: 2026,
+            bps_hold_after_healthy_seconds: 900,
+            bps_session_sticky_seconds: 1800,
+            bps_fallback_cooldown_seconds: 120,
+            bps_cooldown_timeout_seconds: 120,
+            bps_cooldown_400_seconds: 120,
+            bps_cooldown_401_seconds: 600,
+            bps_cooldown_403_seconds: 3600,
+            bps_cooldown_429_seconds: 600,
+            // 403 是账号级拦截：先把指定模型摘掉，让调度器绕开这个号。
+            bps_403_drop_models_enabled: true,
+            bps_403_drop_models: vec!["gpt-6-astra".to_string(), "gpt-5.6-sol".to_string()],
+            bps_403_drop_models_seconds: 0,
+            bps_daily_limit_per_account: 0,
+            bps_enabled: false,
+            bps_endpoint: "https://bps.openai.com/basispoints/api/responses".to_string(),
+            bps_models: Vec::new(),
+            bps_request_style: "native".to_string(),
+            bps_tool_mode: "text".to_string(),
+            bps_catalog_at_prompt_end: false,
+            bps_forward_prompt_cache_key: true,
+            bps_pseudonym_prompt_cache_key: true,
+            bps_metadata_agent_iteration: true,
+            bps_origin: "https://bps.openai.com".to_string(),
+            bps_user_agent: String::new(),
+            effort_retry_enabled: true,
+            bps_context_management_threshold: 0,
+            bps_keep_https_images: true,
+            bps_skip_on_media: true,
+            bps_skip_on_dynamic_tools: true,
+            bps_official_client_only: true,
+            bps_skip_on_previous_response_id: true,
+            bps_previous_response_pin_seconds: 21_600,
+            bps_scrub_echo: true,
+            bps_normalize_usage: true,
+            // 变阻器默认关：计量覆盖属于运营策略，不该在没人配置时改变计费口径。
+            altman_resistor_enabled: false,
+            altman_resistor_percent: 90,
+            altman_resistor_above_percent: 0,
+            bps_excel_client_profile: true,
+            bps_honor_retry_after: true,
+            bps_skip_on_hosted_tools: true,
+            bps_protect_account_status: true,
+            bps_keepalive_seconds: 15,
+            bps_http2_fallback: true,
+            degrade_state_path: String::new(),
+            bps_auth_enabled: false,
+            bps_auth_service_url: "http://127.0.0.1:18770".to_string(),
+            bps_auth_service_token: String::new(),
+            bps_auth_state_path: String::new(),
+            bps_auth_use_for_bps: true,
+            bps_auth_auto_refresh: true,
+            bps_auth_refresh_margin_seconds: 3600,
+            bps_auth_refresh_interval_seconds: 300,
+            bps_auth_login_timeout_seconds: 300,
+            bps_auth_proxy_url: String::new(),
+            bps_auth_notes_enabled: true,
+            bps_auth_notes_auto_login: true,
+            bps_auth_notes_sync_seconds: 300,
+            bps_auth_skip_without_material: true,
+            bps_auth_batch_concurrency: 2,
+            bps_auth_proxy_template: String::new(),
+            bps_auth_proxy_fallback: true,
+            sync_enabled: false,
+            sync_peers: Vec::new(),
+            sync_token: String::new(),
+            sync_interval_seconds: 30,
+            sync_push: true,
+            identity: IdentityConfig::default(),
+        }
+    }
+}
+
+const VALID_PROFILES: &[&str] = &[
+    "passthrough",
+    "codex_cli",
+    "codex_desktop",
+    "opencode",
+    "pi",
+    "custom",
+];
+
+const VALID_FINGERPRINT_MODES: &[&str] = &["passthrough", "machine"];
+
+const VALID_BPS_TOOL_MODES: &[&str] = &["text", "native", "officejs", "declared"];
+const VALID_BPS_REQUEST_STYLES: &[&str] = &["native", "minimal"];
+
+impl PluginConfig {
+    pub fn parse(raw: &[u8]) -> Result<Self, String> {
+        let trimmed_empty = raw.iter().all(|b| b.is_ascii_whitespace());
+        let mut config: Self = if raw.is_empty() || trimmed_empty {
+            Self::default()
+        } else {
+            serde_json::from_slice(raw).map_err(|err| format!("invalid config JSON: {err}"))?
+        };
+        config.normalize();
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// 补齐系统管理字段。
+    fn normalize(&mut self) {
+        // 指纹总开关：新安装默认一账号一指纹。显式保存过 false 的旧配置仍保持 false。
+        let master = self.per_account_fingerprint.unwrap_or(true);
+        self.per_account_fingerprint = Some(master);
+        // 写穿到兼容字段，内部逻辑只读总开关。
+        self.per_account_cookie_jar = master;
+        self.identity.per_account_installation_id = master;
+        // 两种模式都需要稳定种子（统一模式派生全局唯一设备 id）。
+        if self.identity.installation_id_seed.trim().is_empty() {
+            self.identity.installation_id_seed = generate_seed();
+        }
+        // 备注同步周期：太密没意义（一次要拉全量账号），太疏新号迟迟拿不到凭据。
+        self.bps_auth_notes_sync_seconds = self.bps_auth_notes_sync_seconds.clamp(60, 86_400);
+        // 批量授权并发：下限 1，上限 8（再多也只是在 bps-auth 侧排队）。
+        self.bps_auth_batch_concurrency = self.bps_auth_batch_concurrency.clamp(1, 8);
+        self.bps_auth_proxy_template = self.bps_auth_proxy_template.trim().to_string();
+    }
+
+    /// 指纹总开关（normalize 后恒为 Some；新安装默认 true = 每账号隔离）。
+    pub fn per_account(&self) -> bool {
+        self.per_account_fingerprint.unwrap_or(false)
+    }
+
+    /// 归一化后的巡检套餐过滤器（空 = 全部）。
+    pub fn intel_plan_filter(&self) -> Vec<String> {
+        self.intel_plan_types
+            .iter()
+            .map(|value| normalize_plan_type(value))
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
+
+    /// 走 BPS 通道的模型列表（空 = 默认 gpt-6-astra + gpt-5.6-sol）。
+    pub fn bps_model_list(&self) -> Vec<String> {
+        let configured: Vec<String> = self
+            .bps_models
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        if configured.is_empty() {
+            vec!["gpt-6-astra".to_string(), "gpt-5.6-sol".to_string()]
+        } else {
+            configured
+        }
+    }
+
+    /// 每账号「自动降智处理」开关的落盘路径（空配置时从巡检结论路径推导）。
+    pub fn degrade_state_file(&self) -> String {
+        let explicit = self.degrade_state_path.trim();
+        if !explicit.is_empty() {
+            return explicit.to_string();
+        }
+        let intel = self.intel_state_path.trim();
+        if intel.is_empty() {
+            return String::new();
+        }
+        match std::path::Path::new(intel).parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir
+                .join("degrade-handling.json")
+                .to_string_lossy()
+                .into_owned(),
+            _ => String::new(),
+        }
+    }
+
+    /// 账号密码 / Excel 凭据的落盘路径（空配置时从巡检结论路径推导）。
+    ///
+    /// 这个文件里有登录密码与 refresh_token，落盘时按 0600 收紧权限；路径留空时
+    /// 与巡检结论同目录（容器里通常是 /app/data/codex-native-transport/）。
+    pub fn bps_auth_state_file(&self) -> String {
+        let explicit = self.bps_auth_state_path.trim();
+        if !explicit.is_empty() {
+            return explicit.to_string();
+        }
+        let intel = self.intel_state_path.trim();
+        if intel.is_empty() {
+            return String::new();
+        }
+        match std::path::Path::new(intel).parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                dir.join("bps-auth.json").to_string_lossy().into_owned()
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// 403 要摘除的模型列表（空 = 默认 gpt-6-astra + gpt-5.6-sol）。
+    pub fn bps_403_drop_model_list(&self) -> Vec<String> {
+        let configured: Vec<String> = self
+            .bps_403_drop_models
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect();
+        if configured.is_empty() {
+            vec!["gpt-6-astra".to_string(), "gpt-5.6-sol".to_string()]
+        } else {
+            configured
+        }
+    }
+
+    /// 摘除保持时长（秒）：0 = 跟随「BPS 冷却：403」。
+    pub fn bps_403_drop_seconds(&self) -> u32 {
+        if self.bps_403_drop_models_seconds > 0 {
+            self.bps_403_drop_models_seconds
+        } else {
+            self.bps_cooldown_403_seconds
+        }
+    }
+
+    /// 摘除记录落盘路径（空配置时与 degrade 状态文件同目录）。
+    pub fn model_drop_state_file(&self) -> String {
+        let base = self.degrade_state_file();
+        if base.trim().is_empty() {
+            return String::new();
+        }
+        match std::path::Path::new(&base).parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                dir.join("model-drop.json").to_string_lossy().into_owned()
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// BPS 排查日志路径（`bps-notes.log`）：与 degrade 状态文件同目录；两者都没配
+    /// 就不落盘（等价于关掉这个日志）。
+    pub fn bps_log_file(&self) -> String {
+        let base = self.degrade_state_file();
+        if base.trim().is_empty() {
+            return String::new();
+        }
+        match std::path::Path::new(&base).parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => {
+                dir.join("bps-notes.log").to_string_lossy().into_owned()
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// `bps_user_agent` 的最终取值：空 = 不改写客户端 UA；`browser` = 浏览器 UA 实验档；
+    /// 其它值原样发送。
+    pub fn bps_user_agent_value(&self) -> Option<String> {
+        match self.bps_user_agent.trim() {
+            "" => None,
+            value if value.eq_ignore_ascii_case("browser") => Some("Mozilla/5.0".to_string()),
+            value => Some(value.to_string()),
+        }
+    }
+
+    /// 跨机同步的对端面板地址（去尾斜杠、丢空项）。
+    pub fn sync_peer_list(&self) -> Vec<String> {
+        self.sync_peers
+            .iter()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
+
+    /// 跨机同步用的鉴权 token（空 = 复用 panel_token）。
+    pub fn sync_auth_token(&self) -> String {
+        let explicit = self.sync_token.trim();
+        if explicit.is_empty() {
+            self.panel_token.trim().to_string()
+        } else {
+            explicit.to_string()
+        }
+    }
+
+    /// 变阻器生效时的百分比（关掉返回 None）。装配回程改写器时用它。
+    ///
+    /// 百分比超界按上限收口：配置校验已经拦住保存，这里再兜一次，
+    /// 避免手工改库或旧配置把 100 以上的值带进运行时。
+    pub fn active_resistor_percent(&self) -> Option<u8> {
+        if !self.altman_resistor_enabled {
+            return None;
+        }
+        Some(
+            self.altman_resistor_percent
+                .min(crate::resistor::MAX_PERCENT),
+        )
+    }
+
+    /// 变阻器规则（关掉返回 None）：目标百分比 + 触发门限。
+    ///
+    /// 门限为 0 时等价于旧的一刀切行为；大于 0 时只改写超过门限的请求。
+    pub fn active_resistor_rule(&self) -> Option<crate::resistor::Rule> {
+        if !self.altman_resistor_enabled {
+            return None;
+        }
+        Some(crate::resistor::Rule::new(
+            self.altman_resistor_percent,
+            self.altman_resistor_above_percent,
+        ))
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.connect_timeout_seconds > 300 {
+            return Err("connect_timeout_seconds must be within 0..=300".to_string());
+        }
+        if !(1..=1024).contains(&self.max_request_body_mb) {
+            return Err("max_request_body_mb must be within 1..=1024".to_string());
+        }
+        if !(8..=4096).contains(&self.max_cached_clients) {
+            return Err("max_cached_clients must be within 8..=4096".to_string());
+        }
+        if !self.panel_addr.trim().is_empty() && self.panel_token.trim().is_empty() {
+            return Err(
+                "panel_addr 非空时必须同时配置 panel_token（面板不做无鉴权暴露）".to_string(),
+            );
+        }
+        if self.sync_interval_seconds > 3600 {
+            return Err("sync_interval_seconds must be within 0..=3600".to_string());
+        }
+        if self.sync_enabled && self.sync_push && self.sync_peer_list().is_empty() {
+            return Err(
+                "sync_enabled 且 sync_push 打开时至少要配一个 sync_peers 对端地址".to_string(),
+            );
+        }
+        for peer in &self.sync_peer_list() {
+            let parsed = reqwest::Url::parse(peer)
+                .map_err(|err| format!("sync_peers 地址 {peer:?} 无效: {err}"))?;
+            if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+                return Err(format!("sync_peers 地址 {peer:?} 必须是 http(s) 地址"));
+            }
+        }
+        if !(60..=86_400).contains(&self.intel_loop_interval_seconds) {
+            return Err("intel_loop_interval_seconds must be within 60..=86400".to_string());
+        }
+        if !(1..=16).contains(&self.intel_concurrency) {
+            return Err("intel_concurrency must be within 1..=16".to_string());
+        }
+        if !(5..=600).contains(&self.intel_prompt_timeout_seconds) {
+            return Err("intel_prompt_timeout_seconds must be within 5..=600".to_string());
+        }
+        if self.intel_prompt_retries > 5 {
+            return Err("intel_prompt_retries must be within 0..=5".to_string());
+        }
+        if self.intel_degraded_before_year != 0
+            && !(2000..=2100).contains(&self.intel_degraded_before_year)
+        {
+            return Err("intel_degraded_before_year must be 0 or within 2000..=2100".to_string());
+        }
+        if !(1..=10).contains(&self.intel_confirmations) {
+            return Err("intel_confirmations must be within 1..=10".to_string());
+        }
+        if self.bps_hold_after_healthy_seconds > 86_400 {
+            return Err("bps_hold_after_healthy_seconds must be within 0..=86400".to_string());
+        }
+        if self.bps_session_sticky_seconds > 86_400 {
+            return Err("bps_session_sticky_seconds must be within 0..=86400".to_string());
+        }
+        if self.bps_previous_response_pin_seconds > 86_400 {
+            return Err("bps_previous_response_pin_seconds must be within 0..=86400".to_string());
+        }
+        // 变阻器百分比上限 99：100 等于「全额缓存」，既没有调整意义，
+        // 也会把真实用量彻底盖掉；非法值直接拒绝保存，避免运行时静默不生效。
+        if !crate::resistor::is_valid_percent(self.altman_resistor_percent) {
+            return Err(format!(
+                "altman_resistor_percent must be within 0..={}",
+                crate::resistor::MAX_PERCENT
+            ));
+        }
+        // 门限允许到 100（100 = 只有 100% 命中的请求才会被改写，实际等价于关闭）。
+        if self.altman_resistor_above_percent > 100 {
+            return Err("altman_resistor_above_percent must be within 0..=100".to_string());
+        }
+        // 冷却上限放宽到一天：403 这类账号级拦截需要长冷却才有意义。
+        for (name, value) in [
+            (
+                "bps_fallback_cooldown_seconds",
+                self.bps_fallback_cooldown_seconds,
+            ),
+            (
+                "bps_cooldown_timeout_seconds",
+                self.bps_cooldown_timeout_seconds,
+            ),
+            ("bps_cooldown_400_seconds", self.bps_cooldown_400_seconds),
+            ("bps_cooldown_401_seconds", self.bps_cooldown_401_seconds),
+            ("bps_cooldown_403_seconds", self.bps_cooldown_403_seconds),
+            ("bps_cooldown_429_seconds", self.bps_cooldown_429_seconds),
+            (
+                "bps_403_drop_models_seconds",
+                self.bps_403_drop_models_seconds,
+            ),
+        ] {
+            if value > 86_400 {
+                return Err(format!("{name} must be within 0..=86400"));
+            }
+        }
+        if self.bps_daily_limit_per_account > 100_000 {
+            return Err("bps_daily_limit_per_account must be within 0..=100000".to_string());
+        }
+        if self.bps_keepalive_seconds > 60 {
+            return Err("bps_keepalive_seconds must be within 0..=60".to_string());
+        }
+        if self.bps_enabled {
+            let endpoint = self.bps_endpoint.trim();
+            if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+                return Err("bps_endpoint must start with http:// or https://".to_string());
+            }
+            if !VALID_BPS_TOOL_MODES.contains(&self.bps_tool_mode.trim()) {
+                return Err(format!(
+                    "bps_tool_mode must be one of {}",
+                    VALID_BPS_TOOL_MODES.join("/")
+                ));
+            }
+            if self.bps_user_agent.len() > 256 {
+                return Err("bps_user_agent must be within 0..=256 bytes".to_string());
+            }
+            if self.bps_origin.len() > 256 {
+                return Err("bps_origin must be within 0..=256 bytes".to_string());
+            }
+        }
+        if !VALID_BPS_REQUEST_STYLES.contains(&self.bps_request_style.trim()) {
+            return Err(format!(
+                "bps_request_style must be one of {}",
+                VALID_BPS_REQUEST_STYLES.join("/")
+            ));
+        }
+        if !VALID_PROFILES.contains(&self.identity.profile.as_str()) {
+            return Err(format!(
+                "identity.profile must be one of {}",
+                VALID_PROFILES.join("/")
+            ));
+        }
+        if !VALID_FINGERPRINT_MODES.contains(&self.identity.fingerprint_mode.as_str()) {
+            return Err(format!(
+                "identity.fingerprint_mode must be one of {}",
+                VALID_FINGERPRINT_MODES.join("/")
+            ));
+        }
+        if self.identity.profile == "custom" {
+            if self.identity.custom_originator.trim().is_empty() {
+                return Err("identity.custom_originator is required for custom profile".to_string());
+            }
+            if self.identity.custom_user_agent_template.trim().is_empty() {
+                return Err(
+                    "identity.custom_user_agent_template is required for custom profile"
+                        .to_string(),
+                );
+            }
+        }
+        match self.identity.residency.trim() {
+            "" | "us" => {}
+            other => {
+                return Err(format!(
+                    "identity.residency must be empty or \"us\", got {other:?}"
+                ))
+            }
+        }
+        if !(1..=168).contains(&self.identity.version_sync_interval_hours) {
+            return Err("identity.version_sync_interval_hours must be within 1..=168".to_string());
+        }
+        let pinned = self.identity.pinned_version.trim();
+        if pinned.is_empty() || pinned.len() > 64 {
+            return Err("identity.pinned_version is required".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn normalized_json(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("serialize plugin config")
+    }
+}
+
+fn generate_seed() -> String {
+    // machine HMAC 与 installation id 派生共用该种子，因此必须来自系统随机源。
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_config_normalizes_to_defaults() {
+        for raw in [b"".as_slice(), b"{}".as_slice()] {
+            let parsed = PluginConfig::parse(raw).unwrap();
+            // 默认：一账号一指纹，身份会话保持透传，种子自动生成。
+            assert_eq!(parsed.per_account_fingerprint, Some(true));
+            assert!(parsed.per_account_cookie_jar);
+            assert!(parsed.identity.per_account_installation_id);
+            assert_eq!(parsed.identity.fingerprint_mode, "passthrough");
+            assert!(!parsed.identity.version_auto_sync);
+            assert!(!parsed.identity.installation_id_seed.is_empty());
+            assert!(!parsed.force_http11);
+            assert_eq!(parsed.max_request_body_mb, 128);
+        }
+    }
+
+    #[test]
+    fn master_switch_overrides_legacy_fields() {
+        // 打开总开关 → 一账号一指纹，写穿覆盖旧字段。
+        let parsed = PluginConfig::parse(
+            br#"{"per_account_fingerprint":true,"per_account_cookie_jar":false,"identity":{"per_account_installation_id":false}}"#,
+        )
+        .unwrap();
+        assert!(parsed.per_account());
+        assert!(parsed.per_account_cookie_jar);
+        assert!(parsed.identity.per_account_installation_id);
+    }
+
+    #[test]
+    fn config_without_master_switch_uses_safe_per_account_default() {
+        // 未规范化配置没有总开关时，按新安装的安全默认值处理。
+        let legacy = PluginConfig::parse(
+            br#"{"per_account_cookie_jar":true,"identity":{"per_account_installation_id":true}}"#,
+        )
+        .unwrap();
+        assert!(legacy.per_account());
+        assert!(legacy.per_account_cookie_jar);
+        assert!(legacy.identity.per_account_installation_id);
+    }
+
+    #[test]
+    fn one_id_per_request_parses_and_defaults_off() {
+        assert!(!PluginConfig::parse(b"{}").unwrap().one_id_per_request);
+        let parsed = PluginConfig::parse(br#"{"one_id_per_request":true}"#).unwrap();
+        assert!(parsed.one_id_per_request);
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        assert!(PluginConfig::parse(br#"{"nope":1}"#).is_err());
+        assert!(PluginConfig::parse(br#"{"identity":{"nope":1}}"#).is_err());
+    }
+
+    #[test]
+    fn intel_and_panel_defaults() {
+        let d = PluginConfig::default();
+        assert!(!d.intel_enabled);
+        assert!(!d.intel_loop_enabled);
+        assert_eq!(d.intel_model, "gpt-6-astra");
+        assert_eq!(d.admin_api_base, "http://127.0.0.1:8080");
+        assert!(d.panel_addr.is_empty());
+        assert!(!d.bps_enabled);
+        assert_eq!(
+            d.bps_model_list(),
+            vec!["gpt-6-astra".to_string(), "gpt-5.6-sol".to_string()]
+        );
+    }
+
+    #[test]
+    fn panel_requires_token() {
+        assert!(PluginConfig::parse(br#"{"panel_addr":"127.0.0.1:8848"}"#).is_err());
+        assert!(
+            PluginConfig::parse(br#"{"panel_addr":"127.0.0.1:8848","panel_token":"t"}"#).is_ok()
+        );
+    }
+
+    #[test]
+    fn plan_filter_normalizes_aliases() {
+        let parsed = PluginConfig::parse(
+            br#"{"intel_plan_types":[" Pro ","chatgpt_pro","self-serve-business-prolite","unknown"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.intel_plan_filter(),
+            vec![
+                "pro".to_string(),
+                "pro".to_string(),
+                "self_serve_business_prolite".to_string(),
+                "unknown".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn bps_endpoint_validated_only_when_enabled() {
+        assert!(PluginConfig::parse(br#"{"bps_endpoint":"bad","bps_enabled":false}"#).is_ok());
+        assert!(PluginConfig::parse(br#"{"bps_endpoint":"bad","bps_enabled":true}"#).is_err());
+        assert!(PluginConfig::parse(
+            br#"{"bps_enabled":true,"bps_endpoint":"https://bps.openai.com/basispoints/api/responses"}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn sync_receive_only_allows_empty_peers() {
+        // 主从部署：跟随端（sync_push=false）可以不配对端地址，只接收主服务器推来的状态。
+        let cfg =
+            PluginConfig::parse(br#"{"sync_enabled":true,"sync_push":false,"sync_peers":[]}"#)
+                .unwrap();
+        assert!(cfg.sync_enabled);
+        assert!(!cfg.sync_push);
+        // 还要推送，就必须有对端地址。
+        assert!(
+            PluginConfig::parse(br#"{"sync_enabled":true,"sync_push":true,"sync_peers":[]}"#)
+                .is_err()
+        );
+        assert!(
+            PluginConfig::parse(br#"{"sync_enabled":true,"sync_peers":["http://a:8848"]}"#).is_ok()
+        );
+        assert!(PluginConfig::parse(br#"{"sync_enabled":true,"sync_peers":["ftp://a"]}"#).is_err());
+        // 默认（不写 sync_push）就是允许推送。
+        assert!(PluginConfig::default().sync_push);
+    }
+
+    #[test]
+    fn rejects_out_of_range() {
+        assert!(PluginConfig::parse(br#"{"max_request_body_mb":0}"#).is_err());
+        assert!(PluginConfig::parse(br#"{"connect_timeout_seconds":301}"#).is_err());
+        assert!(PluginConfig::parse(br#"{"max_cached_clients":4}"#).is_err());
+        assert!(PluginConfig::parse(br#"{"identity":{"profile":"chrome"}}"#).is_err());
+        assert!(PluginConfig::parse(br#"{"identity":{"fingerprint_mode":"full"}}"#).is_err());
+        assert!(PluginConfig::parse(br#"{"identity":{"residency":"eu"}}"#).is_err());
+    }
+
+    #[test]
+    fn custom_profile_requires_originator_and_template() {
+        assert!(PluginConfig::parse(br#"{"identity":{"profile":"custom"}}"#).is_err());
+        let parsed = PluginConfig::parse(
+            br#"{"identity":{"profile":"custom","custom_originator":"my_client","custom_user_agent_template":"my_client/{version}"}}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.identity.profile, "custom");
+    }
+
+    #[test]
+    fn seed_is_generated_once_and_stable() {
+        let parsed = PluginConfig::parse(b"{}").unwrap();
+        assert!(!parsed.identity.installation_id_seed.is_empty());
+        // 已有种子不被覆盖
+        let json = parsed.normalized_json();
+        let reparsed = PluginConfig::parse(&json).unwrap();
+        assert_eq!(
+            parsed.identity.installation_id_seed,
+            reparsed.identity.installation_id_seed
+        );
+    }
+
+    #[test]
+    fn normalized_json_is_complete() {
+        let normalized = PluginConfig::default().normalized_json();
+        let value: serde_json::Value = serde_json::from_slice(&normalized).unwrap();
+        let object = value.as_object().unwrap();
+        for key in [
+            "force_http11",
+            "connect_timeout_seconds",
+            "per_account_fingerprint",
+            "one_id_per_request",
+            "per_account_cookie_jar",
+            "max_request_body_mb",
+            "max_cached_clients",
+            "panel_addr",
+            "panel_token",
+            "admin_api_base",
+            "admin_api_key",
+            "intel_enabled",
+            "intel_plan_types",
+            "intel_model",
+            "intel_prompt",
+            "intel_fail_marker",
+            "intel_loop_enabled",
+            "intel_loop_interval_seconds",
+            "intel_concurrency",
+            "intel_auto_pause",
+            "intel_state_path",
+            "intel_prompt_timeout_seconds",
+            "intel_prompt_retries",
+            "intel_timeout_is_failed",
+            "intel_confirmations",
+            "intel_require_year",
+            "intel_degraded_before_year",
+            "bps_hold_after_healthy_seconds",
+            "bps_session_sticky_seconds",
+            "bps_fallback_cooldown_seconds",
+            "bps_cooldown_timeout_seconds",
+            "bps_cooldown_400_seconds",
+            "bps_cooldown_401_seconds",
+            "bps_cooldown_403_seconds",
+            "bps_cooldown_429_seconds",
+            "bps_403_drop_models_enabled",
+            "bps_403_drop_models",
+            "bps_403_drop_models_seconds",
+            "bps_daily_limit_per_account",
+            "bps_enabled",
+            "bps_endpoint",
+            "bps_models",
+            "bps_request_style",
+            "bps_tool_mode",
+            "bps_catalog_at_prompt_end",
+            "bps_forward_prompt_cache_key",
+            "bps_pseudonym_prompt_cache_key",
+            "bps_metadata_agent_iteration",
+            "bps_origin",
+            "bps_user_agent",
+            "effort_retry_enabled",
+            "bps_context_management_threshold",
+            "bps_keep_https_images",
+            "bps_skip_on_media",
+            "bps_skip_on_dynamic_tools",
+            "bps_official_client_only",
+            "bps_skip_on_previous_response_id",
+            "bps_previous_response_pin_seconds",
+            "bps_scrub_echo",
+            "bps_normalize_usage",
+            "altman_resistor_enabled",
+            "altman_resistor_percent",
+            "bps_excel_client_profile",
+            "bps_honor_retry_after",
+            "bps_skip_on_hosted_tools",
+            "bps_protect_account_status",
+            "bps_keepalive_seconds",
+            "bps_http2_fallback",
+            "bps_auth_enabled",
+            "bps_auth_service_url",
+            "bps_auth_service_token",
+            "bps_auth_state_path",
+            "bps_auth_use_for_bps",
+            "bps_auth_auto_refresh",
+            "bps_auth_refresh_margin_seconds",
+            "bps_auth_refresh_interval_seconds",
+            "bps_auth_login_timeout_seconds",
+            "bps_auth_proxy_url",
+            "bps_auth_notes_enabled",
+            "bps_auth_notes_auto_login",
+            "bps_auth_notes_sync_seconds",
+            "bps_auth_skip_without_material",
+            "bps_auth_batch_concurrency",
+            "bps_auth_proxy_template",
+            "bps_auth_proxy_fallback",
+            "degrade_state_path",
+            "sync_enabled",
+            "sync_peers",
+            "sync_token",
+            "sync_interval_seconds",
+            "sync_push",
+            "identity",
+        ] {
+            assert!(object.contains_key(key), "missing {key}");
+        }
+        let identity = object["identity"].as_object().unwrap();
+        for key in [
+            "profile",
+            "fingerprint_mode",
+            "residency",
+            "strip_non_native_identity_headers",
+            "align_sandbox_with_user_agent",
+            "per_account_installation_id",
+            "version_auto_sync",
+            "pinned_version",
+        ] {
+            assert!(identity.contains_key(key), "missing identity.{key}");
+        }
+    }
+}

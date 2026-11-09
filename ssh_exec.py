@@ -1,0 +1,10 @@
+import paramiko, sys, os, json
+cfg=json.load(open(os.path.join(os.path.dirname(__file__),'ssh_config.json'),encoding='utf-8'))
+client=paramiko.SSHClient(); client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.connect(cfg['host'], port=cfg.get('port',22), username=cfg.get('user','root'), password=cfg['password'], timeout=20, banner_timeout=20, auth_timeout=20)
+cmd=open(os.path.join(os.path.dirname(__file__),'ssh_command.txt'),encoding='utf-8').read()
+stdin, stdout, stderr=client.exec_command(cmd, timeout=int(os.environ.get('SSH_TIMEOUT','900')))
+out=stdout.read().decode('utf-8','replace'); err=stderr.read().decode('utf-8','replace'); code=stdout.channel.recv_exit_status()
+sys.stdout.buffer.write(out.encode('utf-8','replace'))
+if err: sys.stderr.buffer.write(err.encode('utf-8','replace'))
+sys.exit(code)

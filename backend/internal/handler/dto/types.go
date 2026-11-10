@@ -134,6 +134,8 @@ type Group struct {
 	VideoModelPrices map[string]map[string]float64 `json:"video_model_prices,omitempty"`
 	// VideoBillingMode 视频计费模式：local_price / upstream_cost
 	VideoBillingMode string `json:"video_billing_mode,omitempty"`
+	// VideoResolutionTiers 覆盖内置分辨率档映射，如 {"768p":"720p"}
+	VideoResolutionTiers map[string]string `json:"video_resolution_tiers,omitempty"`
 	// Codex alpha/search 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
 	WebSearchPricePerCall        *float64 `json:"web_search_price_per_call"`
 	SearchPricePer1k             *float64 `json:"search_price_per_1k"`

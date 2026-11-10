@@ -113,8 +113,8 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 		if apiKey.Group.VideoRateMultiplier > 0 {
 			task.RateMultiplier = apiKey.Group.VideoRateMultiplier
 		}
-		if price := service.LookupVideoModelPrice(apiKey.Group.VideoModelPrices, info.Model,
-			service.NormalizeVideoBillingResolutionOrDefault(info.Resolution)); price != nil {
+		if price := service.LookupVideoModelPriceWithTiers(apiKey.Group.VideoModelPrices,
+			apiKey.Group.VideoResolutionTiers, info.Model, info.Resolution); price != nil {
 			task.PricePerSecond = *price
 		}
 	}

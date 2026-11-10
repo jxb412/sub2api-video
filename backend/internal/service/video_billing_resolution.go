@@ -55,3 +55,29 @@ func NormalizeVideoBillingResolutionOrDefault(resolution string) string {
 	}
 	return VideoBillingResolution480P
 }
+
+// ResolveVideoBillingTier 先查分组覆盖，再落回内置映射，最后兜底 480p。
+// 上游常返回非标准档位（如 MiniMax 的 768p），逐项目覆盖比改代码更灵活。
+func ResolveVideoBillingTier(resolution string, overrides map[string]string) string {
+	key := strings.ToLower(strings.TrimSpace(resolution))
+	if key != "" && len(overrides) > 0 {
+		for raw, tier := range overrides {
+			if strings.ToLower(strings.TrimSpace(raw)) != key {
+				continue
+			}
+			if normalized, ok := LookupVideoBillingResolution(tier); ok {
+				return normalized
+			}
+		}
+	}
+	return NormalizeVideoBillingResolutionOrDefault(resolution)
+}
+
+// LookupVideoModelPriceWithTiers 用覆盖后的档位查秒单价。
+func LookupVideoModelPriceWithTiers(prices map[string]map[string]float64, tiers map[string]string, model, resolution string) *float64 {
+	if len(prices) == 0 {
+		return nil
+	}
+	tier := ResolveVideoBillingTier(resolution, tiers)
+	return LookupVideoModelPrice(prices, model, tier)
+}

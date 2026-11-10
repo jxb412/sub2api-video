@@ -56,6 +56,8 @@ type Group struct {
 	VideoRateMultiplier          float64
 	// VideoBillingMode 视频计费模式：local_price（我方秒单价）或 upstream_cost（跟随上游）
 	VideoBillingMode string
+	// VideoResolutionTiers 覆盖内置的分辨率→档位映射，如 {"768p":"720p"}
+	VideoResolutionTiers map[string]string
 	VideoPrice480P               *float64
 	VideoPrice720P               *float64
 	VideoPrice1080P              *float64

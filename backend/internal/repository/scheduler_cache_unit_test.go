@@ -33,6 +33,38 @@ func newSchedulerCacheUnitWithRedis(t *testing.T) (*schedulerCache, *miniredis.M
 	return cache, mr
 }
 
+func TestSchedulerCacheSnapshotPreservesExplicitVideoCapabilities(t *testing.T) {
+	for _, capability := range []service.OpenAIEndpointCapability{
+		service.OpenAIEndpointCapabilityMinimaxVideo,
+		service.OpenAIEndpointCapabilitySeedance,
+	} {
+		t.Run(string(capability), func(t *testing.T) {
+			ctx := context.Background()
+			cache := newSchedulerCacheUnit(t)
+			bucket := service.SchedulerBucket{GroupID: 4, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+			account := service.Account{
+				ID: 123, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"base_url": "https://video.example.com", "api_key": "test-key",
+					"openai_capabilities": []string{string(capability)},
+				},
+				Extra: map[string]any{"openai_responses_supported": false},
+			}
+			token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+			require.NoError(t, err)
+			require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+
+			accounts, hit, err := cache.GetSnapshot(ctx, bucket)
+			require.NoError(t, err)
+			require.True(t, hit)
+			require.Len(t, accounts, 1)
+			require.True(t, accounts[0].SupportsOpenAIEndpointCapability(capability))
+			require.False(t, accounts[0].SupportsOpenAIEndpointCapability(service.OpenAIEndpointCapabilityGrokMediaGeneration))
+			require.False(t, accounts[0].SupportsOpenAIEndpointCapability(service.OpenAIEndpointCapabilityChatCompletions))
+		})
+	}
+}
+
 func TestSchedulerCacheWriteAccountIDsSkipsUnencodableTimes(t *testing.T) {
 	ctx := context.Background()
 	cache := newSchedulerCacheUnit(t)

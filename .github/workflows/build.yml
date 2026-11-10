@@ -37,4 +37,4 @@ jobs:
         run: |
           go test ./internal/pkg/... -count=1
           go test -tags=unit ./internal/service/ ./internal/handler/ ./internal/handler/admin/ ./internal/server/routes/ -count=1 -run 'Video|Seedance|Minimax|Billing|CodexPageContext|CodexSelectedPage'
-          go test -tags=unit ./internal/repository/ -count=1 -run 'GroupVideoBilling'
+          go test -tags=unit ./internal/repository/ -count=1 -run 'GroupVideoBilling|SchedulerCacheSnapshotPreservesExplicitVideoCapabilities'

@@ -102,6 +102,22 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	if apiKey.GroupID != nil {
 		task.GroupID = *apiKey.GroupID
 	}
+
+	// 计费快照：把分组的价格与倍率固定在任务上。
+	task.BillingMode = service.VideoBillingModeDefault
+	task.RateMultiplier = 1
+	if apiKey.Group != nil {
+		if apiKey.Group.VideoBillingMode != "" {
+			task.BillingMode = apiKey.Group.VideoBillingMode
+		}
+		if apiKey.Group.VideoRateMultiplier > 0 {
+			task.RateMultiplier = apiKey.Group.VideoRateMultiplier
+		}
+		if price := service.LookupVideoModelPrice(apiKey.Group.VideoModelPrices, info.Model,
+			service.NormalizeVideoBillingResolutionOrDefault(info.Resolution)); price != nil {
+			task.PricePerSecond = *price
+		}
+	}
 	if err := service.CreateVideoTask(requestCtx, service.VideoTaskRecord{
 		TaskID:          task.ID,
 		Provider:        "minimax",

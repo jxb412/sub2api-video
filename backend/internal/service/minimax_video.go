@@ -63,6 +63,11 @@ type MinimaxVideoTask struct {
 	DurationSeconds int     `json:"duration_seconds,omitempty"`
 	Resolution      string  `json:"resolution,omitempty"`
 	UpstreamCostUSD float64 `json:"upstream_cost_usd,omitempty"`
+	// 计费快照：提交时固定，避免任务完成后分组改价导致对不上账。
+	BillingMode    string   `json:"billing_mode,omitempty"`
+	PricePerSecond float64  `json:"price_per_second,omitempty"`
+	RateMultiplier float64  `json:"rate_multiplier,omitempty"`
+	BilledCostUSD  float64  `json:"billed_cost_usd,omitempty"`
 	VideoURL        string  `json:"video_url,omitempty"`
 	Error           string  `json:"error,omitempty"`
 	UserID          int64   `json:"user_id,omitempty"`

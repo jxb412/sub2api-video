@@ -254,6 +254,10 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 			_ = CompleteVideoTask(ctx, rec.ID, rec.UpstreamID, rec.Status, rec.Resolution,
 				rec.VideoURL, rec.Error, rec.DurationSeconds,
 				rec.UpstreamCostUSD, billed, VideoBillingModeDefault)
+			// 结算：写回金额 + 记 usage_logs + 扣费
+			if rec.Status == MinimaxVideoStatusDone {
+				s.SettleMinimaxVideoTask(ctx, *rec)
+			}
 		}
 	}()
 	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
@@ -343,3 +347,4 @@ func loadVideoTaskForPersist(ctx context.Context, taskID string, userID, apiKeyI
 	}
 	return task
 }
+

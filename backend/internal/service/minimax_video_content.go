@@ -1,0 +1,162 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	"github.com/gin-gonic/gin"
+)
+
+// MinimaxVideoRequestURL applies the same operator URL policy as other providers.
+func (s *OpenAIGatewayService) MinimaxVideoRequestURL(account *Account) (string, error) {
+	base, err := s.validateUpstreamBaseURL(MinimaxVideoBaseURL(account))
+	if err != nil {
+		return "", err
+	}
+	return BuildMinimaxVideoURL(base, MinimaxVideoEndpointCreate, "")
+}
+
+func minimaxVideoSameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil || !strings.EqualFold(a.Scheme, b.Scheme) || !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		if u.Scheme == "https" {
+			return "443"
+		}
+		return "80"
+	}
+	return port(a) == port(b)
+}
+
+func (s *OpenAIGatewayService) minimaxVideoContentURL(raw, base string) (*url.URL, *url.URL, error) {
+	origin, err := url.Parse(base)
+	if err != nil || origin.Host == "" || origin.User != nil {
+		return nil, nil, fmt.Errorf("invalid video origin")
+	}
+	reference, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid video URL")
+	}
+	target := origin.ResolveReference(reference)
+	if err := s.validateMinimaxVideoContentURL(target, origin); err != nil {
+		return nil, nil, err
+	}
+	return target, origin, nil
+}
+
+func (s *OpenAIGatewayService) validateMinimaxVideoContentURL(target, origin *url.URL) error {
+	if target == nil || target.User != nil || target.Fragment != "" {
+		return fmt.Errorf("invalid video URL")
+	}
+	if _, err := s.validateOutboundURL(target.String()); err != nil {
+		return fmt.Errorf("video URL rejected by security policy")
+	}
+	allowPrivate := minimaxVideoSameOrigin(target, origin) && s.cfg != nil && s.cfg.Security.URLAllowlist.AllowPrivateHosts
+	if !allowPrivate && urlvalidator.IsBlockedHost(target.Hostname()) {
+		return fmt.Errorf("private video host is not allowed")
+	}
+	return nil
+}
+
+// Resolve at dial time and connect to the validated IP, preventing DNS rebinding.
+func minimaxVideoContentDialer(origin *url.URL, allowPrivate bool) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		for _, ip := range ips {
+			if !(allowPrivate && strings.EqualFold(host, origin.Hostname())) && (!ip.IP.IsGlobalUnicast() || urlvalidator.IsBlockedHost(ip.IP.String())) {
+				return nil, fmt.Errorf("private video address is not allowed")
+			}
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("video host has no addresses")
+		}
+		return nil, lastErr
+	}
+}
+
+// StreamMinimaxVideoContent authenticates only to the configured provider origin.
+// CDN URLs and redirects never receive the provider bearer token.
+func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *MinimaxVideoTask, baseURL, token string) error {
+	if s == nil || c == nil || task == nil || strings.TrimSpace(task.VideoURL) == "" {
+		return fmt.Errorf("video content is unavailable")
+	}
+	target, origin, err := s.minimaxVideoContentURL(task.VideoURL, baseURL)
+	if err != nil {
+		return err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = minimaxVideoContentDialer(origin, s.cfg != nil && s.cfg.Security.URLAllowlist.AllowPrivateHosts)
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 10 * time.Minute, Transport: transport}
+	authenticate := func(req *http.Request) {
+		req.Header.Del("Authorization")
+		if minimaxVideoSameOrigin(req.URL, origin) && strings.TrimSpace(token) != "" {
+			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+		}
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many video redirects")
+		}
+		if err := s.validateMinimaxVideoContentURL(req.URL, origin); err != nil {
+			return err
+		}
+		authenticate(req)
+		return nil
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, target.String(), nil)
+	if err != nil {
+		return err
+	}
+	authenticate(req)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("video upstream returned %d", resp.StatusCode)
+	}
+	contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	if !strings.HasPrefix(contentType, "video/") && contentType != "application/octet-stream" {
+		return fmt.Errorf("upstream did not return video content")
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": task.ID + ".mp4"}))
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "private, no-store")
+	c.Status(http.StatusOK)
+	_, err = io.Copy(c.Writer, resp.Body)
+	return err
+}

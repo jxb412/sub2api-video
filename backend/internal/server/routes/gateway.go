@@ -104,6 +104,20 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.MinimaxVideoGeneration(c)
 			return
 		}
+		if platform == service.PlatformOpenAI {
+			body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "Failed to read video request"}})
+				return
+			}
+			requestmodel.ResetRequestBody(c.Request, body)
+			// Keep unrelated OpenAI/Grok video models out of the MiniMax bridge.
+			// Custom aliases can use the dedicated MiniMax platform group.
+			if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, "model").String()), "MiniMax-H3") {
+				h.OpenAIGateway.MinimaxVideoGeneration(c)
+				return
+			}
+		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": gin.H{
@@ -113,6 +127,11 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoStatusHandler := func(c *gin.Context) {
+		if strings.HasPrefix(c.Param("request_id"), "mmv_") {
+			h.OpenAIGateway.MinimaxVideoStatus(c)
+			return
+		}
+
 		// Video status requests do not carry a model, so composite groups cannot
 		// be resolved by compositeTargetPlatformMiddleware. Route them through
 		// the Grok handler and let scheduler/account selection enforce capacity.
@@ -133,6 +152,11 @@ func RegisterGatewayRoutes(
 		})
 	}
 	videoContentHandler := func(c *gin.Context) {
+		if strings.HasPrefix(c.Param("request_id"), "mmv_") {
+			h.OpenAIGateway.MinimaxVideoContent(c)
+			return
+		}
+
 		// Video content requests do not carry a model, so composite groups cannot
 		// be resolved by compositeTargetPlatformMiddleware. Route them through
 		// the Grok handler just like video status lookups.

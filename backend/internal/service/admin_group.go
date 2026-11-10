@@ -392,6 +392,10 @@ func normalizeUpdateGroupInputForSimpleMode(input *UpdateGroupInput) {
 }
 
 func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupInput) (*Group, error) {
+	videoBillingMode, videoResolutionTiers, err := normalizeGroupVideoBilling(input.VideoBillingMode, input.VideoResolutionTiers)
+	if err != nil {
+		return nil, err
+	}
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && NormalizeGroupPlatform(input.Platform) == PlatformComposite {
 		return nil, infraerrors.BadRequest("SIMPLE_MODE_GROUP_NOT_BINDABLE", "composite groups are not supported in simple mode")
 	}
@@ -612,8 +616,8 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice720P:                  videoPrice720P,
 		VideoPrice1080P:                 videoPrice1080P,
 		VideoModelPrices:                NormalizeVideoModelPrices(input.VideoModelPrices),
-		VideoBillingMode:                normalizeVideoBillingModeInput(input.VideoBillingMode),
-		VideoResolutionTiers:            input.VideoResolutionTiers,
+		VideoBillingMode:                videoBillingMode,
+		VideoResolutionTiers:            videoResolutionTiers,
 		WebSearchPricePerCall:           webSearchPricePerCall,
 		SearchPricePer1k:                searchPricePer1k,
 		AudioRealtimePricePerMin:        audioRealtimePricePerMin,
@@ -770,6 +774,10 @@ func (s *adminServiceImpl) validateFallbackGroupOnInvalidRequest(ctx context.Con
 }
 
 func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *UpdateGroupInput) (*Group, error) {
+	videoBillingMode, videoResolutionTiers, err := normalizeGroupVideoBilling(input.VideoBillingMode, input.VideoResolutionTiers)
+	if err != nil {
+		return nil, err
+	}
 	group, err := s.groupRepo.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
@@ -950,10 +958,10 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 
 	if strings.TrimSpace(input.VideoBillingMode) != "" {
-		group.VideoBillingMode = normalizeVideoBillingModeInput(input.VideoBillingMode)
+		group.VideoBillingMode = videoBillingMode
 	}
 	if input.VideoResolutionTiers != nil {
-		group.VideoResolutionTiers = input.VideoResolutionTiers
+		group.VideoResolutionTiers = videoResolutionTiers
 	}
 	if input.WebSearchPricePerCall != nil {
 		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)
@@ -1555,11 +1563,14 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 	return &ReplaceUserGroupResult{MigratedKeys: migrated}, nil
 }
 
-// normalizeVideoBillingModeInput 只接受两种模式，非法值退回默认，避免脏数据。
-func normalizeVideoBillingModeInput(mode string) string {
+func normalizeGroupVideoBilling(mode string, tiers map[string]string) (string, map[string]string, error) {
 	normalized, ok := NormalizeVideoBillingMode(mode)
 	if !ok {
-		return VideoBillingModeDefault
+		return "", nil, infraerrors.BadRequest("INVALID_VIDEO_BILLING_MODE", "video_billing_mode must be local_price or upstream_cost")
 	}
-	return normalized
+	resolved, err := NormalizeVideoResolutionTiers(tiers)
+	if err != nil {
+		return "", nil, infraerrors.BadRequest("INVALID_VIDEO_RESOLUTION_TIERS", err.Error())
+	}
+	return normalized, resolved, nil
 }

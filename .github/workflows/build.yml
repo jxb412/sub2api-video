@@ -31,9 +31,10 @@ jobs:
         run: go build ./...
 
       - name: Vet
-        run: go vet ./... || true
+        run: go vet ./...
 
-      - name: Unit tests (service + pkg)
+      - name: Video and gateway regression tests
         run: |
           go test ./internal/pkg/... -count=1
-          go test ./internal/service/ -count=1 -run 'Video|Seedance|Minimax|Billing' || true
+          go test -tags=unit ./internal/service/ ./internal/handler/ ./internal/handler/admin/ ./internal/server/routes/ -count=1 -run 'Video|Seedance|Minimax|Billing|CodexPageContext|CodexSelectedPage'
+          go test -tags=unit ./internal/repository/ -count=1 -run 'GroupVideoBilling'

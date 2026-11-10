@@ -16,7 +16,7 @@ import (
 // 设计要点：
 //  1. 全部按 user_id 收敛，任务 id 猜不到别人的数据（store 层也会再校验一次）。
 //  2. 列表与统计共享同一套筛选参数，前端两个组件传同样的 query 即可。
-//  3. 进行中的任务没有费用，返回 0；失败任务 billed_cost_usd 为 0（全额退还）。
+//  3. 成功后结算；进行中与失败任务尚未扣费，billed_cost_usd 为 0。
 
 func minimaxVideoFilterFromQuery(c *gin.Context, userID int64) service.VideoTaskFilter {
 	f := service.VideoTaskFilter{
@@ -39,6 +39,15 @@ func minimaxVideoFilterFromQuery(c *gin.Context, userID int64) service.VideoTask
 	}
 	if gid := atoiDefault(c.Query("group_id"), 0); gid > 0 {
 		f.GroupID = int64(gid)
+	}
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize < 1 {
+		f.PageSize = 20
+	}
+	if f.PageSize > 100 {
+		f.PageSize = 100
 	}
 	return f
 }
@@ -63,7 +72,7 @@ func (h *OpenAIGatewayHandler) ListVideoTasks(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to load video tasks")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
 		"items":     items,
 		"total":     total,
 		"page":      f.Page,
@@ -87,7 +96,7 @@ func (h *OpenAIGatewayHandler) GetVideoTask(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video task not found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": rec})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rec})
 }
 
 // DeleteVideoTask 软删除任务；进行中的任务不允许删除。
@@ -99,7 +108,11 @@ func (h *OpenAIGatewayHandler) DeleteVideoTask(c *gin.Context) {
 	}
 	taskID := strings.TrimSpace(c.Param("id"))
 	rec, err := service.GetVideoTask(c.Request.Context(), taskID, subject.UserID)
-	if err == nil && rec != nil && (rec.Status == service.MinimaxVideoStatusQueued || rec.Status == service.MinimaxVideoStatusProcessing) {
+	if err != nil {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to load video task")
+		return
+	}
+	if rec != nil && (rec.Status == service.MinimaxVideoStatusQueued || rec.Status == service.MinimaxVideoStatusProcessing) {
 		h.errorResponse(c, http.StatusConflict, "invalid_request_error", "Generating tasks cannot be deleted")
 		return
 	}
@@ -112,7 +125,7 @@ func (h *OpenAIGatewayHandler) DeleteVideoTask(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video task not found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"deleted": true}})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"deleted": true}})
 }
 
 // VideoTaskStats 概览卡数据。
@@ -123,13 +136,13 @@ func (h *OpenAIGatewayHandler) VideoTaskStats(c *gin.Context) {
 		return
 	}
 	f := minimaxVideoFilterFromQuery(c, subject.UserID)
-	f.Status, f.Model, f.Search, f.Page, f.PageSize = "", "", "", 0, 0
+	f.Page, f.PageSize = 0, 0
 	stats, err := service.VideoTaskStatsFor(c.Request.Context(), f)
 	if err != nil {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to load video stats")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": stats})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": stats})
 }
 
 // DownloadVideoTask 供面板下载视频：JWT 鉴权 + 归属校验后回源取流。
@@ -159,6 +172,8 @@ func (h *OpenAIGatewayHandler) DownloadVideoTask(c *gin.Context) {
 		Resolution: rec.Resolution,
 	}
 	if err := h.gatewayService.StreamMinimaxVideoContent(c, task, baseURL, token); err != nil {
-		h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
+		if !c.Writer.Written() {
+			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
+		}
 	}
 }

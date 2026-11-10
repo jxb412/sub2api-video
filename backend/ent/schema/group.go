@@ -162,6 +162,14 @@ func (Group) Fields() []ent.Field {
 			Optional().
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("按模型族和分辨率覆盖视频每秒价格"),
+		field.String("video_billing_mode").
+			MaxLen(24).
+			Default("local_price").
+			Comment("视频计费模式：local_price 或 upstream_cost"),
+		field.JSON("video_resolution_tiers", map[string]string{}).
+			Default(map[string]string{}).
+			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
+			Comment("上游视频分辨率到计费档位的映射"),
 		field.Float("web_search_price_per_call").
 			Optional().
 			Nillable().

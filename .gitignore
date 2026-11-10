@@ -50,6 +50,8 @@ pnpm-debug.log*
 # 环境配置
 # ===================
 .env
+ssh_config.json
+ssh_command.txt
 .env.local
 .env.*.local
 *.env
@@ -141,6 +143,7 @@ docs/*
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
 !docs/ASYNC_IMAGE_TASKS.md
+!docs/VIDEO_OPERATIONS.md
 !docs/BATCH_IMAGE_MVP.md
 !docs/COMPOSITE_GROUPS.md
 !docs/PLUGIN_DEVELOPMENT.md

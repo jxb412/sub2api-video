@@ -1088,15 +1088,22 @@ export default {
         notConfigured: '未配置'
       },
       videoPricing: {
+        billingMode: 'MiniMax H3 计费模式',
+        localPrice: '按配置的秒单价',
+        upstreamCost: '跟随上游成本',
+        billingModeHint: '按秒单价模式：秒单价 × 实际时长 × 视频倍率；未配价格时跟随上游。上游成本模式：上游回传成本 × 视频倍率。',
+        resolutionTiers: 'MiniMax 分辨率计费档位',
+        resolutionTiersHint: '以逗号分隔「输出分辨率:计费档位」。目标档位为 480p、720p 或 1080p；768p 默认按 720p 计价。',
+        invalidResolutionTiers: '分辨率映射格式有误，请使用 768p:720p；多个映射以英文逗号分隔。',
         title: '视频生成计费',
         description:
-          '配置 Grok 视频生成的每秒单价（USD/秒），留空则使用默认每秒价（grok-imagine-video：480p $0.05/s、720p $0.07/s；video-1.5：480p $0.08/s、720p $0.14/s、1080p $0.25/s）',
+          '配置视频生成的每秒单价（USD/秒）。MiniMax 未配置单价时使用上游成本；Grok 留空使用默认每秒价（grok-imagine-video：480p $0.05/s、720p $0.07/s；video-1.5：480p $0.08/s、720p $0.14/s、1080p $0.25/s）',
         modelOverridesTitle: '按模型覆盖视频价格',
         modelOverridesDescription: '已填写的单元格会覆盖该模型族的平面分辨率价格。video-1.5 的 preview 与 legacy 别名共用同一模型族；留空则回退到平面分辨率价格。',
         independentMultiplier: '视频倍率独立',
         videoMultiplier: '视频独立倍率',
         modeHint:
-          '视频按秒计费：费用 = 每秒价格 × 时长（1-15 秒，未指定默认 8 秒）。默认叠加当前分组有效倍率；开启独立倍率后改用视频独立倍率。',
+          '视频按秒计费：费用 = 每秒价格 × 视频时长。默认叠加当前分组有效倍率；开启独立倍率后改用视频独立倍率。',
         finalPricePreview: '最终每秒价格预览',
         notConfigured: '未配置'
       },

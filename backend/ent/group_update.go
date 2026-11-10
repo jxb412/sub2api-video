@@ -673,6 +673,26 @@ func (_u *GroupUpdate) ClearVideoModelPrices() *GroupUpdate {
 	return _u
 }
 
+// SetVideoBillingMode sets the "video_billing_mode" field.
+func (_u *GroupUpdate) SetVideoBillingMode(v string) *GroupUpdate {
+	_u.mutation.SetVideoBillingMode(v)
+	return _u
+}
+
+// SetNillableVideoBillingMode sets the "video_billing_mode" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableVideoBillingMode(v *string) *GroupUpdate {
+	if v != nil {
+		_u.SetVideoBillingMode(*v)
+	}
+	return _u
+}
+
+// SetVideoResolutionTiers sets the "video_resolution_tiers" field.
+func (_u *GroupUpdate) SetVideoResolutionTiers(v map[string]string) *GroupUpdate {
+	_u.mutation.SetVideoResolutionTiers(v)
+	return _u
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (_u *GroupUpdate) SetWebSearchPricePerCall(v float64) *GroupUpdate {
 	_u.mutation.ResetWebSearchPricePerCall()
@@ -1533,6 +1553,11 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.VideoBillingMode(); ok {
+		if err := group.VideoBillingModeValidator(v); err != nil {
+			return &ValidationError{Name: "video_billing_mode", err: fmt.Errorf(`ent: validator failed for field "Group.video_billing_mode": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.SearchPricePer1k(); ok {
 		if err := group.SearchPricePer1kValidator(v); err != nil {
 			return &ValidationError{Name: "search_price_per_1k", err: fmt.Errorf(`ent: validator failed for field "Group.search_price_per_1k": %w`, err)}
@@ -1771,6 +1796,12 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.VideoModelPricesCleared() {
 		_spec.ClearField(group.FieldVideoModelPrices, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.VideoBillingMode(); ok {
+		_spec.SetField(group.FieldVideoBillingMode, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.VideoResolutionTiers(); ok {
+		_spec.SetField(group.FieldVideoResolutionTiers, field.TypeJSON, value)
 	}
 	if value, ok := _u.mutation.WebSearchPricePerCall(); ok {
 		_spec.SetField(group.FieldWebSearchPricePerCall, field.TypeFloat64, value)
@@ -2893,6 +2924,26 @@ func (_u *GroupUpdateOne) ClearVideoModelPrices() *GroupUpdateOne {
 	return _u
 }
 
+// SetVideoBillingMode sets the "video_billing_mode" field.
+func (_u *GroupUpdateOne) SetVideoBillingMode(v string) *GroupUpdateOne {
+	_u.mutation.SetVideoBillingMode(v)
+	return _u
+}
+
+// SetNillableVideoBillingMode sets the "video_billing_mode" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableVideoBillingMode(v *string) *GroupUpdateOne {
+	if v != nil {
+		_u.SetVideoBillingMode(*v)
+	}
+	return _u
+}
+
+// SetVideoResolutionTiers sets the "video_resolution_tiers" field.
+func (_u *GroupUpdateOne) SetVideoResolutionTiers(v map[string]string) *GroupUpdateOne {
+	_u.mutation.SetVideoResolutionTiers(v)
+	return _u
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (_u *GroupUpdateOne) SetWebSearchPricePerCall(v float64) *GroupUpdateOne {
 	_u.mutation.ResetWebSearchPricePerCall()
@@ -3766,6 +3817,11 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "subscription_type", err: fmt.Errorf(`ent: validator failed for field "Group.subscription_type": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.VideoBillingMode(); ok {
+		if err := group.VideoBillingModeValidator(v); err != nil {
+			return &ValidationError{Name: "video_billing_mode", err: fmt.Errorf(`ent: validator failed for field "Group.video_billing_mode": %w`, err)}
+		}
+	}
 	if v, ok := _u.mutation.SearchPricePer1k(); ok {
 		if err := group.SearchPricePer1kValidator(v); err != nil {
 			return &ValidationError{Name: "search_price_per_1k", err: fmt.Errorf(`ent: validator failed for field "Group.search_price_per_1k": %w`, err)}
@@ -4021,6 +4077,12 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.VideoModelPricesCleared() {
 		_spec.ClearField(group.FieldVideoModelPrices, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.VideoBillingMode(); ok {
+		_spec.SetField(group.FieldVideoBillingMode, field.TypeString, value)
+	}
+	if value, ok := _u.mutation.VideoResolutionTiers(); ok {
+		_spec.SetField(group.FieldVideoResolutionTiers, field.TypeJSON, value)
 	}
 	if value, ok := _u.mutation.WebSearchPricePerCall(); ok {
 		_spec.SetField(group.FieldWebSearchPricePerCall, field.TypeFloat64, value)

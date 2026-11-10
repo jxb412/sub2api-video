@@ -22,7 +22,7 @@ const (
 func NormalizeVideoBillingMode(mode string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", VideoBillingModeLocalPrice, "local", "price", "localprice":
-		return VideoBillingModeLocalPrice, strings.TrimSpace(mode) == ""
+		return VideoBillingModeLocalPrice, true
 	case VideoBillingModeUpstreamCost, "upstream", "cost", "cost_usd", "upstreamcost":
 		return VideoBillingModeUpstreamCost, true
 	default:

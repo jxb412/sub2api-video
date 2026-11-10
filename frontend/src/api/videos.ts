@@ -54,30 +54,30 @@ export interface VideoTaskListParams {
 }
 
 interface Paged<T> {
-  data: { items: T[]; total: number; page: number; page_size: number }
+  items: T[]; total: number; page: number; page_size: number
 }
 
 /** 用户端：当前用户的视频任务 */
 export const videosAPI = {
   async list(params: VideoTaskListParams = {}) {
     const { data } = await apiClient.get<Paged<VideoTask>>('/videos', { params })
-    return data.data
+    return data
   },
   async stats(params: VideoTaskListParams = {}) {
-    const { data } = await apiClient.get<{ data: VideoTaskStats }>('/videos/stats', { params })
-    return data.data
+    const { data } = await apiClient.get<VideoTaskStats>('/videos/stats', { params })
+    return data
   },
   async get(taskId: string) {
-    const { data } = await apiClient.get<{ data: VideoTask }>(`/videos/${taskId}`)
-    return data.data
+    const { data } = await apiClient.get<VideoTask>(`/videos/${encodeURIComponent(taskId)}`)
+    return data
   },
   async remove(taskId: string) {
-    const { data } = await apiClient.delete<{ data: { deleted: boolean } }>(`/videos/${taskId}`)
-    return data.data
+    const { data } = await apiClient.delete<{ deleted: boolean }>(`/videos/${encodeURIComponent(taskId)}`)
+    return data
   },
   /** 下载视频内容（带鉴权，返回 Blob） */
   async download(taskId: string) {
-    const res = await apiClient.get(`/videos/${taskId}/content`, { responseType: 'blob' })
+    const res = await apiClient.get(`/videos/${encodeURIComponent(taskId)}/content`, { responseType: 'blob', timeout: 600000 })
     return res.data as Blob
   },
 }
@@ -86,27 +86,25 @@ export const videosAPI = {
 export const adminVideosAPI = {
   async list(params: VideoTaskListParams = {}) {
     const { data } = await apiClient.get<Paged<VideoTask>>('/admin/videos', { params })
-    return data.data
+    return data
   },
   async stats(params: VideoTaskListParams = {}) {
-    const { data } = await apiClient.get<{ data: { stats: VideoTaskStats; margin_percent: number } }>(
+    const { data } = await apiClient.get<{ stats: VideoTaskStats; margin_percent: number }>(
       '/admin/videos/stats',
       { params },
     )
-    return data.data
+    return data
   },
   async get(taskId: string) {
-    const { data } = await apiClient.get<{ data: VideoTask }>(`/admin/videos/${taskId}`)
-    return data.data
+    const { data } = await apiClient.get<VideoTask>(`/admin/videos/${encodeURIComponent(taskId)}`)
+    return data
   },
   async remove(taskId: string) {
-    const { data } = await apiClient.delete<{ data: { deleted: boolean } }>(`/admin/videos/${taskId}`)
-    return data.data
+    const { data } = await apiClient.delete<{ deleted: boolean }>(`/admin/videos/${encodeURIComponent(taskId)}`)
+    return data
   },
   async fail(taskId: string, reason: string) {
-    const form = new FormData()
-    form.append('reason', reason)
-    const { data } = await apiClient.post(`/admin/videos/${taskId}/fail`, form)
+    const { data } = await apiClient.post(`/admin/videos/${encodeURIComponent(taskId)}/fail`, { reason })
     return data
   },
 }

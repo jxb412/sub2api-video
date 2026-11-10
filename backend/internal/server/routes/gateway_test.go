@@ -357,6 +357,31 @@ func TestGatewayRoutesCompositeVideoGenerationAllowed(t *testing.T) {
 	require.NotContains(t, w.Body.String(), "not supported")
 }
 
+func TestGatewayRoutesMinimaxCreateAndCompositeTaskLookups(t *testing.T) {
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformMiniMax} {
+		router := newGatewayRoutesTestRouter(platform)
+		for _, path := range []string{"/v1/videos", "/v1/videos/generations", "/videos", "/videos/generations"} {
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"MiniMax-H3","prompt":"waves"}`))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			// The deliberately minimal fixture has no user subject, so reaching
+			// MiniMax's authentication guard proves dispatch without any upstream call.
+			require.Equal(t, http.StatusInternalServerError, w.Code)
+			require.Contains(t, w.Body.String(), "User context not found")
+		}
+	}
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformComposite} {
+		router := newGatewayRoutesTestRouter(platform)
+		for _, path := range []string{"/v1/videos/mmv_task", "/v1/videos/mmv_task/content", "/videos/mmv_task", "/videos/mmv_task/content"} {
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+			require.Equal(t, http.StatusInternalServerError, w.Code)
+			require.Contains(t, w.Body.String(), "User context not found")
+		}
+	}
+}
+
 func TestGatewayRoutesCompositeOpenAIOnlyEndpointsRequireOpenAITarget(t *testing.T) {
 	router := newGatewayRoutesTestRouter(service.PlatformComposite)
 

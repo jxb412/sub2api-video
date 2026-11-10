@@ -1,14 +1,34 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
+
+// ResolveMinimaxVideoRateMultiplier follows the same user/group override and
+// independent video-rate policy as the normal usage billing path.
+func (s *OpenAIGatewayService) ResolveMinimaxVideoRateMultiplier(ctx context.Context, key *APIKey) float64 {
+	rate := 1.0
+	if s.cfg != nil && s.cfg.Default.RateMultiplier > 0 {
+		rate = s.cfg.Default.RateMultiplier
+	}
+	if key != nil && key.Group != nil {
+		rate = key.Group.RateMultiplier
+		if key.GroupID != nil {
+			rate = s.ResolveUserGroupRateMultiplier(ctx, key.UserID, *key.GroupID, rate)
+		}
+	}
+	return resolveVideoRateMultiplier(key, rate)
+}
 
 // MiniMax H3 (and other OpenAI-shaped async video providers) integration.
 //
@@ -51,8 +71,8 @@ func (e GrokMediaEndpoint) IsMinimaxVideo() bool {
 }
 
 // MinimaxVideoTask is the persisted state of one gateway-owned video job.
-// It is stored through the gateway cache (same blob store as the Grok pending
-// billing snapshot) so that an in-flight task survives process restarts.
+// Its billing snapshot and state are stored in PostgreSQL before submission;
+// completed jobs and pending settlements remain available across restarts.
 type MinimaxVideoTask struct {
 	ID              string  `json:"id"`
 	UpstreamID      string  `json:"upstream_id,omitempty"`
@@ -64,18 +84,20 @@ type MinimaxVideoTask struct {
 	Resolution      string  `json:"resolution,omitempty"`
 	UpstreamCostUSD float64 `json:"upstream_cost_usd,omitempty"`
 	// 计费快照：提交时固定，避免任务完成后分组改价导致对不上账。
-	BillingMode    string   `json:"billing_mode,omitempty"`
-	PricePerSecond float64  `json:"price_per_second,omitempty"`
-	RateMultiplier float64  `json:"rate_multiplier,omitempty"`
-	BilledCostUSD  float64  `json:"billed_cost_usd,omitempty"`
-	VideoURL        string  `json:"video_url,omitempty"`
-	Error           string  `json:"error,omitempty"`
-	UserID          int64   `json:"user_id,omitempty"`
-	APIKeyID        int64   `json:"api_key_id,omitempty"`
-	GroupID         int64   `json:"group_id,omitempty"`
-	AccountID       int64   `json:"account_id,omitempty"`
-	CreatedAt       string  `json:"created_at,omitempty"`
-	CompletedAt     string  `json:"completed_at,omitempty"`
+	BillingMode     string                       `json:"billing_mode,omitempty"`
+	PricePerSecond  float64                      `json:"price_per_second,omitempty"`
+	PriceConfigured bool                         `json:"price_configured,omitempty"`
+	BillingSnapshot *MinimaxVideoBillingSnapshot `json:"billing_snapshot,omitempty"`
+	RateMultiplier  float64                      `json:"rate_multiplier,omitempty"`
+	BilledCostUSD   float64                      `json:"billed_cost_usd,omitempty"`
+	VideoURL        string                       `json:"video_url,omitempty"`
+	Error           string                       `json:"error,omitempty"`
+	UserID          int64                        `json:"user_id,omitempty"`
+	APIKeyID        int64                        `json:"api_key_id,omitempty"`
+	GroupID         int64                        `json:"group_id,omitempty"`
+	AccountID       int64                        `json:"account_id,omitempty"`
+	CreatedAt       string                       `json:"created_at,omitempty"`
+	CompletedAt     string                       `json:"completed_at,omitempty"`
 }
 
 // IsTerminal reports whether the task can no longer change state.
@@ -101,19 +123,23 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return info, fmt.Errorf("request body must be a JSON object")
 	}
-	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
-	if model == "" {
+	modelValue := gjson.GetBytes(body, "model")
+	model := strings.TrimSpace(modelValue.String())
+	if modelValue.Type != gjson.String || model == "" {
 		return info, fmt.Errorf("model is required")
 	}
 	info.Model = model
 	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
-	if d := gjson.GetBytes(body, "duration"); d.Exists() {
-		info.DurationSeconds = int(d.Int())
-	} else if d := gjson.GetBytes(body, "seconds"); d.Exists() {
-		info.DurationSeconds = int(d.Int())
-	}
-	if d := gjson.GetBytes(body, "duration_seconds"); d.Exists() && info.DurationSeconds <= 0 {
-		info.DurationSeconds = int(d.Int())
+	info.DurationSeconds = 5
+	for _, field := range []string{"duration", "seconds", "duration_seconds"} {
+		if value := gjson.GetBytes(body, field); value.Exists() {
+			duration, err := strconv.Atoi(value.String())
+			if err != nil || duration <= 0 || duration > 120 {
+				return info, fmt.Errorf("%s must be an integer between 1 and 120", field)
+			}
+			info.DurationSeconds = duration
+			break
+		}
 	}
 	info.Resolution = strings.TrimSpace(firstNonEmptyString(
 		gjson.GetBytes(body, "resolution").String(),
@@ -140,8 +166,28 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 			info.Prompt = strings.Join(texts, "\n")
 		}
 	}
-	if url := strings.TrimSpace(gjson.GetBytes(body, "image_url").String()); url != "" {
-		info.InputImageURLs = append(info.InputImageURLs, url)
+	images := gjson.GetBytes(body, "image_url")
+	if images.Exists() {
+		if images.IsArray() {
+			for _, image := range images.Array() {
+				if image.Type != gjson.String || strings.TrimSpace(image.String()) == "" {
+					return info, fmt.Errorf("image_url must contain URL strings")
+				}
+				info.InputImageURLs = append(info.InputImageURLs, strings.TrimSpace(image.String()))
+			}
+		} else if images.Type == gjson.String && strings.TrimSpace(images.String()) != "" {
+			info.InputImageURLs = append(info.InputImageURLs, strings.TrimSpace(images.String()))
+		} else {
+			return info, fmt.Errorf("image_url must be a URL string or array")
+		}
+	}
+	if strings.EqualFold(info.Model, "MiniMax-H3") {
+		if info.Resolution == "" {
+			info.Resolution = "768p"
+		}
+		if info.Resolution != "768p" {
+			return info, fmt.Errorf("MiniMax-H3 supports only 768p resolution")
+		}
 	}
 	if info.Prompt == "" && len(info.InputImageURLs) == 0 {
 		return info, fmt.Errorf("prompt is required")
@@ -193,6 +239,10 @@ func MinimaxVideoBaseURL(account *Account) string {
 // BuildMinimaxVideoURL builds the upstream URL for one endpoint/task.
 func BuildMinimaxVideoURL(base string, endpoint GrokMediaEndpoint, taskID string) (string, error) {
 	base = strings.TrimRight(base, "/")
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid MiniMax video base URL")
+	}
 	switch endpoint {
 	case MinimaxVideoEndpointCreate:
 		return base + minimaxVideoPathGenerations, nil
@@ -281,6 +331,19 @@ func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 			task.Error = s
 		}
 	}
+	switch task.Status {
+	case "succeeded", "completed", "success":
+		task.Status = MinimaxVideoStatusDone
+	case "failed", "cancelled", "canceled", "expired":
+		task.Status = MinimaxVideoStatusError
+	case "running", "in_progress":
+		task.Status = MinimaxVideoStatusProcessing
+	case "pending":
+		task.Status = MinimaxVideoStatusQueued
+	}
+	if task.Error != "" && task.Status != MinimaxVideoStatusDone {
+		task.Status = MinimaxVideoStatusError
+	}
 	if task.Status == "" {
 		// A body that only carries a video URL is implicitly done.
 		if task.VideoURL != "" {
@@ -310,16 +373,9 @@ func MinimaxVideoTaskTTL(fallback time.Duration) time.Duration {
 // parseFlexibleFloat accepts both numeric and string-encoded floats, which the
 // upstream mixes (cost_usd arrives as a decimal string).
 func parseFlexibleFloat(value gjson.Result) float64 {
-	if value.Type == gjson.Number {
-		return value.Float()
-	}
-	s := strings.TrimSpace(value.String())
-	if s == "" {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value.String()), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
 		return 0
 	}
-	var out float64
-	if _, err := fmt.Sscanf(s, "%f", &out); err != nil {
-		return 0
-	}
-	return out
+	return parsed
 }

@@ -17,11 +17,11 @@ import (
 
 func adminVideoFilterFromQuery(c *gin.Context) service.VideoTaskFilter {
 	f := service.VideoTaskFilter{
-		Status:  strings.TrimSpace(c.Query("status")),
-		Model:   strings.TrimSpace(c.Query("model")),
-		Search:  strings.TrimSpace(c.Query("search")),
-		Page:    queryInt(c.Query("page"), 1),
-		PageSize: queryInt(c.Query("page_size"), 20),
+		Status:         strings.TrimSpace(c.Query("status")),
+		Model:          strings.TrimSpace(c.Query("model")),
+		Search:         strings.TrimSpace(c.Query("search")),
+		Page:           queryInt(c.Query("page"), 1),
+		PageSize:       queryInt(c.Query("page_size"), 20),
 		IncludeDeleted: c.Query("include_deleted") == "1" || c.Query("include_deleted") == "true",
 	}
 	if v := queryInt(c.Query("user_id"), 0); v > 0 {
@@ -42,6 +42,15 @@ func adminVideoFilterFromQuery(c *gin.Context) service.VideoTaskFilter {
 		if t, err := time.Parse(time.RFC3339, raw); err == nil {
 			f.To = &t
 		}
+	}
+	if f.Page < 1 {
+		f.Page = 1
+	}
+	if f.PageSize < 1 {
+		f.PageSize = 20
+	}
+	if f.PageSize > 100 {
+		f.PageSize = 100
 	}
 	return f
 }
@@ -72,7 +81,7 @@ func (h *OpenAIGatewayHandler) AdminListVideoTasks(c *gin.Context) {
 // VideoTaskStats 统计 + 毛利。
 func (h *OpenAIGatewayHandler) AdminVideoTaskStats(c *gin.Context) {
 	f := adminVideoFilterFromQuery(c)
-	f.Status, f.Model, f.Search, f.Page, f.PageSize = "", "", "", 0, 0
+	f.Page, f.PageSize = 0, 0
 	stats, err := service.VideoTaskStatsFor(c.Request.Context(), f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to load stats"})
@@ -83,7 +92,7 @@ func (h *OpenAIGatewayHandler) AdminVideoTaskStats(c *gin.Context) {
 		margin = (stats.BilledCost - stats.UpstreamCost) / stats.BilledCost * 100
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{
-		"stats":         stats,
+		"stats":          stats,
 		"margin_percent": margin,
 	}})
 }
@@ -116,14 +125,32 @@ func (h *OpenAIGatewayHandler) AdminDeleteVideoTask(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{"deleted": true}})
 }
 
-// FailVideoTask 把卡住的任务标记为失败并清零计费（触发退款语义）。
+// FailVideoTask marks only unfinished tasks as failed; it never rewrites settled charges.
 func (h *OpenAIGatewayHandler) FailVideoTask(c *gin.Context) {
 	taskID := strings.TrimSpace(c.Param("id"))
-	reason := strings.TrimSpace(c.DefaultPostForm("reason", "标记失败（管理端操作）"))
-	if err := service.CompleteVideoTask(c.Request.Context(), taskID, "", service.MinimaxVideoStatusError,
-		"", "", reason, 0, 0, 0, ""); err != nil {
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid request body"})
+		return
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = "Marked failed by administrator"
+	}
+	if len(reason) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "reason is too long"})
+		return
+	}
+	updated, err := service.FailPendingVideoTask(c.Request.Context(), taskID, reason)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to update task"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success"})
+	if !updated {
+		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "task is missing or already completed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{"updated": true}})
 }

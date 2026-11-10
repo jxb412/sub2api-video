@@ -835,6 +835,14 @@ func (s *BillingCacheService) ReserveFixedCharge(ctx context.Context, user *User
 		res.Release()
 		return nil, err
 	}
+	// Fixed charges can cover long asynchronous work. Start only after scope
+	// registration is complete, avoiding races while the renewal goroutine reads it.
+	if res != nil {
+		renewer, _ := res.cache.(InflightBalanceReservationRenewer)
+		if renewer != nil || len(res.scopes) > 0 {
+			res.startRenewal(renewer)
+		}
+	}
 	return res, nil
 }
 

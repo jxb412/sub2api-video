@@ -6,7 +6,8 @@ export const grokVideoPriceResolutions = [
 
 export const grokVideoPriceFamilies = [
   { key: 'grok-imagine-video', label: 'grok-imagine-video' },
-  { key: 'grok-imagine-video-1.5', label: 'grok-imagine-video-1.5' }
+  { key: 'grok-imagine-video-1.5', label: 'grok-imagine-video-1.5' },
+  { key: 'minimax-h3', label: 'MiniMax-H3' }
 ] as const
 
 export type VideoModelPrices = Record<string, Record<string, number>>
@@ -74,4 +75,25 @@ export function videoModelPriceFamilyRows(form: VideoModelPricesForm) {
     .sort()
     .map((key) => ({ key, label: key }))
   return [...grokVideoPriceFamilies, ...extra]
+}
+
+export function formatVideoResolutionTiers(tiers?: Record<string, string>): string {
+  return Object.entries(tiers ?? {}).map(([source, target]) => `${source}:${target}`).join(', ')
+}
+
+export function parseVideoResolutionTiers(value: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  if (!value.trim()) return result
+  for (const pair of value.split(',')) {
+    const parts = pair.trim().toLowerCase().split(':').map(part => part.trim())
+    const [source, target] = parts
+    if (parts.length !== 2 || !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(source)
+      || !['480p', '720p', '1080p'].includes(target)
+      || (Object.prototype.hasOwnProperty.call(result, source) && result[source] !== target)) {
+      throw new Error('Invalid video resolution tier mapping')
+    }
+    Object.defineProperty(result, source, { value: target, enumerable: true, configurable: true })
+  }
+  if (Object.keys(result).length > 100) throw new Error('Too many video resolution tier mappings')
+  return result
 }

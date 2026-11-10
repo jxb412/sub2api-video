@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createVideoModelPricesForm,
+  formatVideoResolutionTiers,
+  parseVideoResolutionTiers,
   serializeVideoModelPrices,
   videoModelPriceFamilyRows
 } from '../groupsVideoModelPricing'
@@ -12,7 +14,8 @@ describe('Grok video model pricing form', () => {
 
     expect(videoModelPriceFamilyRows(form).map(({ key }) => key)).toEqual([
       'grok-imagine-video',
-      'grok-imagine-video-1.5'
+      'grok-imagine-video-1.5',
+      'minimax-h3'
     ])
     expect(form['grok-imagine-video']['480p']).toBeNull()
     expect(form['grok-imagine-video-1.5']['1080p']).toBeNull()
@@ -43,5 +46,20 @@ describe('Grok video model pricing form', () => {
     expect(serializeVideoModelPrices(form)).toMatchObject({
       'grok-imagine-video-2': { '480p': 0.2 }
     })
+  })
+})
+
+describe('Video resolution tier mappings', () => {
+  it('round-trips saved overrides without dropping custom output resolutions', () => {
+    const tiers = { '768p': '720p', '1024p': '1080p' }
+    expect(parseVideoResolutionTiers(formatVideoResolutionTiers(tiers))).toEqual(tiers)
+    expect(parseVideoResolutionTiers(' 768P : 1080P ')).toEqual({ '768p': '1080p' })
+    expect(parseVideoResolutionTiers('')).toEqual({})
+  })
+
+  it('rejects unknown price tiers and conflicting normalized mappings', () => {
+    for (const input of ['768p:4k', '768p', ':720p', '768p:720p,768P:1080p']) {
+      expect(() => parseVideoResolutionTiers(input)).toThrow()
+    }
   })
 })

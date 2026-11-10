@@ -39,6 +39,8 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
+          build-args: |
+            COMMIT=${{ github.sha }}
           tags: |
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
             ${{ steps.meta.outputs.image }}:latest

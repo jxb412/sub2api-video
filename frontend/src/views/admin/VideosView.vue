@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
+import { useAppStore } from '@/stores/app'
 import { adminVideosAPI, type VideoTask, type VideoTaskStats } from '@/api/videos'
 
+const appStore = useAppStore()
 const tasks = ref<VideoTask[]>([])
+let loadSequence = 0
 const stats = ref<VideoTaskStats | null>(null)
 const margin = ref(0)
 const total = ref(0)
@@ -38,6 +41,7 @@ function fmt(v?: string | null) {
 }
 
 async function load() {
+  const sequence = ++loadSequence
   loading.value = true
   try {
     const params = {
@@ -50,32 +54,41 @@ async function load() {
       include_deleted: includeDeleted.value || undefined,
     }
     const [list, st] = await Promise.all([adminVideosAPI.list(params), adminVideosAPI.stats({ ...params, page: undefined, page_size: undefined })])
+    if (sequence !== loadSequence) return
     tasks.value = list.items ?? []
     total.value = list.total ?? 0
     stats.value = st.stats
     margin.value = st.margin_percent ?? 0
+  } catch {
+    if (sequence === loadSequence) appStore.showError('加载视频任务失败，请重试')
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
 async function forceFail(t: VideoTask) {
   const reason = window.prompt('标记失败原因', '管理端强制失败')
   if (!reason) return
-  await adminVideosAPI.fail(t.task_id, reason)
-  await load()
+  try {
+    await adminVideosAPI.fail(t.task_id, reason)
+    await load()
+  } catch { appStore.showError('标记失败未成功，任务可能已完成') }
 }
 
 async function remove(t: VideoTask) {
   if (!window.confirm('确认删除该任务？（软删除，可审计）')) return
-  await adminVideosAPI.remove(t.task_id)
-  await load()
+  try {
+    await adminVideosAPI.remove(t.task_id)
+    if (detail.value?.task_id === t.task_id) detail.value = null
+    await load()
+  } catch { appStore.showError('删除任务失败') }
 }
 
 async function openDetail(t: VideoTask) {
-  detail.value = await adminVideosAPI.get(t.task_id)
+  try { detail.value = await adminVideosAPI.get(t.task_id) } catch { appStore.showError('加载任务详情失败') }
 }
 
+watch([page, pageSize], load)
 onMounted(load)
 </script>
 

@@ -110,3 +110,24 @@ func TestSeedancePreservesUpstreamErrorsWithoutRetry(t *testing.T) {
 	require.Contains(t, w.Body.String(), "QuotaExceeded")
 	require.Len(t, upstream.requests, 1)
 }
+
+func TestSeedanceBytePlusInternationalProtocol(t *testing.T) {
+	for _, base := range []string{"https://ark.ap-southeast.bytepluses.com", "https://ark.ap-southeast.bytepluses.com/api/v3"} {
+		account := seedanceTestAccount()
+		account.Credentials["base_url"] = base
+		account.Credentials["model_mapping"] = map[string]any{"video": "seedance-1-0-pro-250528"}
+		upstream := &grokMediaContentUpstreamStub{response: grokMediaContentStatusResponse(`{"id":"cgt-international"}`)}
+		svc := &OpenAIGatewayService{httpUpstream: upstream}
+		c, _ := grokMediaContentTestContext(http.MethodPost, "/api/v3/contents/generations/tasks", nil)
+		_, err := svc.ForwardSeedance(context.Background(), c, account, SeedanceEndpointCreate, "", []byte(`{"model":"video","content":[{"type":"text","text":"waves"}],"duration":5,"resolution":"720p"}`))
+		require.NoError(t, err)
+		require.Equal(t, "https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks", upstream.request.URL.String())
+		body, err := io.ReadAll(upstream.request.Body)
+		require.NoError(t, err)
+		require.Equal(t, "seedance-1-0-pro-250528", gjson.GetBytes(body, "model").String())
+		require.Equal(t, int64(5), gjson.GetBytes(body, "duration").Int())
+		require.Equal(t, "720p", gjson.GetBytes(body, "resolution").String())
+		delete(account.Credentials, "api_key")
+		require.False(t, account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilitySeedance))
+	}
+}

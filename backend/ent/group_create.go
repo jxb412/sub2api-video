@@ -510,6 +510,26 @@ func (_c *GroupCreate) SetVideoModelPrices(v map[string]map[string]float64) *Gro
 	return _c
 }
 
+// SetVideoBillingMode sets the "video_billing_mode" field.
+func (_c *GroupCreate) SetVideoBillingMode(v string) *GroupCreate {
+	_c.mutation.SetVideoBillingMode(v)
+	return _c
+}
+
+// SetNillableVideoBillingMode sets the "video_billing_mode" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableVideoBillingMode(v *string) *GroupCreate {
+	if v != nil {
+		_c.SetVideoBillingMode(*v)
+	}
+	return _c
+}
+
+// SetVideoResolutionTiers sets the "video_resolution_tiers" field.
+func (_c *GroupCreate) SetVideoResolutionTiers(v map[string]string) *GroupCreate {
+	_c.mutation.SetVideoResolutionTiers(v)
+	return _c
+}
+
 // SetWebSearchPricePerCall sets the "web_search_price_per_call" field.
 func (_c *GroupCreate) SetWebSearchPricePerCall(v float64) *GroupCreate {
 	_c.mutation.SetWebSearchPricePerCall(v)
@@ -1147,6 +1167,14 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultVideoRateMultiplier
 		_c.mutation.SetVideoRateMultiplier(v)
 	}
+	if _, ok := _c.mutation.VideoBillingMode(); !ok {
+		v := group.DefaultVideoBillingMode
+		_c.mutation.SetVideoBillingMode(v)
+	}
+	if _, ok := _c.mutation.VideoResolutionTiers(); !ok {
+		v := group.DefaultVideoResolutionTiers
+		_c.mutation.SetVideoResolutionTiers(v)
+	}
 	if _, ok := _c.mutation.LongContextPricingEnabled(); !ok {
 		v := group.DefaultLongContextPricingEnabled
 		_c.mutation.SetLongContextPricingEnabled(v)
@@ -1347,6 +1375,17 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.VideoRateMultiplier(); !ok {
 		return &ValidationError{Name: "video_rate_multiplier", err: errors.New(`ent: missing required field "Group.video_rate_multiplier"`)}
+	}
+	if _, ok := _c.mutation.VideoBillingMode(); !ok {
+		return &ValidationError{Name: "video_billing_mode", err: errors.New(`ent: missing required field "Group.video_billing_mode"`)}
+	}
+	if v, ok := _c.mutation.VideoBillingMode(); ok {
+		if err := group.VideoBillingModeValidator(v); err != nil {
+			return &ValidationError{Name: "video_billing_mode", err: fmt.Errorf(`ent: validator failed for field "Group.video_billing_mode": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.VideoResolutionTiers(); !ok {
+		return &ValidationError{Name: "video_resolution_tiers", err: errors.New(`ent: missing required field "Group.video_resolution_tiers"`)}
 	}
 	if v, ok := _c.mutation.SearchPricePer1k(); ok {
 		if err := group.SearchPricePer1kValidator(v); err != nil {
@@ -1622,6 +1661,14 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.VideoModelPrices(); ok {
 		_spec.SetField(group.FieldVideoModelPrices, field.TypeJSON, value)
 		_node.VideoModelPrices = value
+	}
+	if value, ok := _c.mutation.VideoBillingMode(); ok {
+		_spec.SetField(group.FieldVideoBillingMode, field.TypeString, value)
+		_node.VideoBillingMode = value
+	}
+	if value, ok := _c.mutation.VideoResolutionTiers(); ok {
+		_spec.SetField(group.FieldVideoResolutionTiers, field.TypeJSON, value)
+		_node.VideoResolutionTiers = value
 	}
 	if value, ok := _c.mutation.WebSearchPricePerCall(); ok {
 		_spec.SetField(group.FieldWebSearchPricePerCall, field.TypeFloat64, value)
@@ -2480,6 +2527,30 @@ func (u *GroupUpsert) UpdateVideoModelPrices() *GroupUpsert {
 // ClearVideoModelPrices clears the value of the "video_model_prices" field.
 func (u *GroupUpsert) ClearVideoModelPrices() *GroupUpsert {
 	u.SetNull(group.FieldVideoModelPrices)
+	return u
+}
+
+// SetVideoBillingMode sets the "video_billing_mode" field.
+func (u *GroupUpsert) SetVideoBillingMode(v string) *GroupUpsert {
+	u.Set(group.FieldVideoBillingMode, v)
+	return u
+}
+
+// UpdateVideoBillingMode sets the "video_billing_mode" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateVideoBillingMode() *GroupUpsert {
+	u.SetExcluded(group.FieldVideoBillingMode)
+	return u
+}
+
+// SetVideoResolutionTiers sets the "video_resolution_tiers" field.
+func (u *GroupUpsert) SetVideoResolutionTiers(v map[string]string) *GroupUpsert {
+	u.Set(group.FieldVideoResolutionTiers, v)
+	return u
+}
+
+// UpdateVideoResolutionTiers sets the "video_resolution_tiers" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateVideoResolutionTiers() *GroupUpsert {
+	u.SetExcluded(group.FieldVideoResolutionTiers)
 	return u
 }
 
@@ -3704,6 +3775,34 @@ func (u *GroupUpsertOne) UpdateVideoModelPrices() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearVideoModelPrices() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearVideoModelPrices()
+	})
+}
+
+// SetVideoBillingMode sets the "video_billing_mode" field.
+func (u *GroupUpsertOne) SetVideoBillingMode(v string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetVideoBillingMode(v)
+	})
+}
+
+// UpdateVideoBillingMode sets the "video_billing_mode" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateVideoBillingMode() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateVideoBillingMode()
+	})
+}
+
+// SetVideoResolutionTiers sets the "video_resolution_tiers" field.
+func (u *GroupUpsertOne) SetVideoResolutionTiers(v map[string]string) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetVideoResolutionTiers(v)
+	})
+}
+
+// UpdateVideoResolutionTiers sets the "video_resolution_tiers" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateVideoResolutionTiers() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateVideoResolutionTiers()
 	})
 }
 
@@ -5178,6 +5277,34 @@ func (u *GroupUpsertBulk) UpdateVideoModelPrices() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearVideoModelPrices() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearVideoModelPrices()
+	})
+}
+
+// SetVideoBillingMode sets the "video_billing_mode" field.
+func (u *GroupUpsertBulk) SetVideoBillingMode(v string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetVideoBillingMode(v)
+	})
+}
+
+// UpdateVideoBillingMode sets the "video_billing_mode" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateVideoBillingMode() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateVideoBillingMode()
+	})
+}
+
+// SetVideoResolutionTiers sets the "video_resolution_tiers" field.
+func (u *GroupUpsertBulk) SetVideoResolutionTiers(v map[string]string) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetVideoResolutionTiers(v)
+	})
+}
+
+// UpdateVideoResolutionTiers sets the "video_resolution_tiers" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateVideoResolutionTiers() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateVideoResolutionTiers()
 	})
 }
 

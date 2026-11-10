@@ -1091,15 +1091,22 @@ export default {
         notConfigured: 'Not configured'
       },
       videoPricing: {
+        billingMode: 'MiniMax H3 billing mode',
+        localPrice: 'Configured price per second',
+        upstreamCost: 'Upstream cost',
+        billingModeHint: 'Local pricing: price per second × actual duration × video multiplier, falling back to upstream cost when unpriced. Upstream mode: reported cost × video multiplier.',
+        resolutionTiers: 'MiniMax resolution billing tiers',
+        resolutionTiersHint: 'Comma-separated output resolution:billing tier pairs. Targets: 480p, 720p or 1080p. 768p defaults to the 720p tier.',
+        invalidResolutionTiers: 'Invalid resolution mapping. Use 768p:720p and separate multiple mappings with commas.',
         title: 'Video Generation Pricing',
         description:
-          'Configure Grok video generation prices in USD per second of output video. Leave empty to use the default per-second rates (grok-imagine-video: $0.05/s 480p, $0.07/s 720p; video-1.5: $0.08/s 480p, $0.14/s 720p, $0.25/s 1080p).',
+          'Configure video generation prices in USD per second. MiniMax falls back to upstream cost when unpriced; Grok uses default per-second rates (grok-imagine-video: $0.05/s 480p, $0.07/s 720p; video-1.5: $0.08/s 480p, $0.14/s 720p, $0.25/s 1080p).',
         modelOverridesTitle: 'Per-model video price overrides',
         modelOverridesDescription: 'Each populated cell overrides the flat resolution price for that model family. Preview and legacy aliases for video-1.5 use the same family; empty cells fall back to the flat resolution price.',
         independentMultiplier: 'Use independent video multiplier',
         videoMultiplier: 'Video multiplier',
         modeHint:
-          'Videos are billed per second: per-second price × duration (1-15s, default 8s). By default the current effective group multiplier applies; independent mode uses the video multiplier instead.',
+          'Videos are billed per second: per-second price × video duration. By default the current effective group multiplier applies; independent mode uses the video multiplier instead.',
         finalPricePreview: 'Final per-second price preview',
         notConfigured: 'Not configured'
       },

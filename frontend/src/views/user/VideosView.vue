@@ -2,9 +2,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
+import { useAppStore } from '@/stores/app'
 import { videosAPI, type VideoTask, type VideoTaskStats } from '@/api/videos'
 
+const appStore = useAppStore()
 const tasks = ref<VideoTask[]>([])
+let loadSequence = 0
 const stats = ref<VideoTaskStats | null>(null)
 const total = ref(0)
 const page = ref(1)
@@ -20,6 +23,7 @@ const copied = ref<string>('')
 const showExamples = ref(true)
 
 let pollTimer: number | undefined
+let disposed = false
 
 const statusMeta: Record<string, { label: string; cls: string; dot: string }> = {
   queued: { label: '排队中', cls: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300', dot: 'bg-slate-400' },
@@ -49,6 +53,7 @@ function statusInfo(s: string) {
 }
 
 async function load() {
+  const sequence = ++loadSequence
   loading.value = true
   try {
     const [list, st] = await Promise.all([
@@ -61,17 +66,21 @@ async function load() {
       }),
       videosAPI.stats(modelFilter.value ? { model: modelFilter.value } : {}),
     ])
+    if (sequence !== loadSequence) return
     tasks.value = list.items ?? []
     total.value = list.total ?? 0
     stats.value = st
+    if (selected.value) selected.value = tasks.value.find(t => t.task_id === selected.value?.task_id) ?? selected.value
+  } catch {
+    if (sequence === loadSequence) appStore.showError('加载视频任务失败，请重试')
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
 function schedulePoll() {
   if (pollTimer) window.clearTimeout(pollTimer)
-  if (!hasRunning.value) return
+  if (disposed || !hasRunning.value) return
   pollTimer = window.setTimeout(() => {
     load().finally(schedulePoll)
   }, 5000)
@@ -97,6 +106,8 @@ async function download(task: VideoTask) {
     a.download = `${task.model}-${task.task_id.slice(4, 12)}.mp4`
     a.click()
     URL.revokeObjectURL(url)
+  } catch {
+    appStore.showError('下载视频失败，请稍后重试')
   } finally {
     downloading.value = ''
   }
@@ -104,25 +115,29 @@ async function download(task: VideoTask) {
 
 async function remove(task: VideoTask) {
   if (!window.confirm('删除后不可恢复，历史账单仍会保留。确认删除？')) return
-  await videosAPI.remove(task.task_id)
-  if (selected.value?.task_id === task.task_id) selected.value = null
-  await load()
+  try {
+    await videosAPI.remove(task.task_id)
+    if (selected.value?.task_id === task.task_id) selected.value = null
+    await load()
+  } catch { appStore.showError('删除任务失败') }
 }
 
 async function openDetail(task: VideoTask) {
-  selected.value = await videosAPI.get(task.task_id)
+  try { selected.value = await videosAPI.get(task.task_id) } catch { appStore.showError('加载任务详情失败') }
 }
 
 watch([statusFilter, modelFilter], () => {
   page.value = 1
   load().finally(schedulePoll)
 })
-watch(page, () => load().finally(schedulePoll))
+watch([page, pageSize], () => load().finally(schedulePoll))
 
 onMounted(() => {
   load().finally(schedulePoll)
 })
 onUnmounted(() => {
+  disposed = true
+  loadSequence++
   if (pollTimer) window.clearTimeout(pollTimer)
 })
 
@@ -166,7 +181,7 @@ curl -L "$BASE/v1/videos/mmv_73663385.../content" \\
       { name: 'model', type: 'string', required: '是', desc: '固定 MiniMax-H3' },
       { name: 'prompt', type: 'string', required: '是', desc: '提示词' },
       { name: 'duration', type: 'int', required: '否', desc: '秒数，默认 5' },
-      { name: 'resolution', type: 'string', required: '否', desc: '480p / 720p / 768p / 1080p' },
+      { name: 'resolution', type: 'string', required: '否', desc: 'MiniMax-H3 仅支持 768p，默认 768p' },
     ],
   },
   {
@@ -254,7 +269,7 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
         <div>
           <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100">视频任务</h1>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            MiniMax H3、Seedance 等视频模型的生成任务与计费记录
+            MiniMax H3 的生成任务与计费记录；Seedance 通过下方原生 API 查询，扣费见用量记录
           </p>
         </div>
         <button
@@ -378,7 +393,7 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
               </td>
               <td class="px-4 py-3 text-right font-mono">
                 <span v-if="t.status === 'done'">{{ fmtMoney(t.billed_cost_usd) }}</span>
-                <span v-else-if="t.status === 'error'" class="text-xs text-slate-400 line-through">已退还</span>
+                <span v-else-if="t.status === 'error'" class="text-xs text-slate-400">未扣费</span>
                 <span v-else class="text-slate-300">—</span>
               </td>
               <td class="px-4 py-3 text-slate-500 dark:text-slate-400">{{ fmtTime(t.created_at) }}</td>

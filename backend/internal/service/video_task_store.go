@@ -99,6 +99,14 @@ const videoTaskColumns = `task_id, upstream_id, provider, model, upstream_model,
 	resolution, duration_seconds, user_id, api_key_id, group_id, account_id, video_url,
 	error_message, upstream_cost_usd, billed_cost_usd, billing_mode, created_at, completed_at, deleted_at`
 
+
+// videoTaskColumnsAliased 用于联表查询：users/groups/accounts/api_keys 都有
+// created_at 等同名列，不限定表别名会触发 ambiguous column 错误。
+const videoTaskColumnsAliased = `t.task_id, t.upstream_id, t.provider, t.model, t.upstream_model,
+	t.prompt, t.status, t.resolution, t.duration_seconds, t.user_id, t.api_key_id, t.group_id,
+	t.account_id, t.video_url, t.error_message, t.upstream_cost_usd, t.billed_cost_usd,
+	t.billing_mode, t.created_at, t.completed_at, t.deleted_at`
+
 func scanVideoTask(rows *sql.Rows, withJoins bool) (VideoTaskRecord, error) {
 	var r VideoTaskRecord
 	dest := []any{
@@ -279,7 +287,7 @@ func ListVideoTasks(ctx context.Context, f VideoTaskFilter) ([]VideoTaskRecord, 
 		LEFT JOIN api_keys k ON k.id = t.api_key_id
 		%s
 		ORDER BY t.created_at DESC
-		LIMIT $%d OFFSET $%d`, videoTaskColumns, clause, len(args)-1, len(args))
+		LIMIT $%d OFFSET $%d`, videoTaskColumnsAliased, clause, len(args)-1, len(args))
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, err

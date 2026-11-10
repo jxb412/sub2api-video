@@ -43,6 +43,8 @@ var DefaultModels = []Model{
 	{ID: "gpt-image-2.5-sunburst", Object: "model", Created: 1788825600, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2.5 Sunburst"},
 	{ID: "gpt-image-2.6-flare", Object: "model", Created: 1793750400, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2.6 Flare"},
 	{ID: "gpt-image-2.6-sunburst", Object: "model", Created: 1793750400, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2.6 Sunburst"},
+	// MiniMax H3 drives the async video generation path (see minimax_video.go).
+	{ID: "MiniMax-H3", Object: "model", Created: 1793750400, OwnedBy: "minimax", Type: "model", DisplayName: "MiniMax H3"},
 }
 
 // DefaultModelIDs returns the default model ID list

@@ -1,4 +1,19 @@
 {
+    "MiniMax-H3": {
+        "litellm_provider": "minimax",
+        "mode": "video_generation",
+        "cost_per_second_480p": 0.03,
+        "cost_per_second_720p": 0.05,
+        "cost_per_second_1080p": 0.09,
+        "max_seconds": 10,
+        "default_seconds": 5,
+        "supported_endpoints": [
+            "/v1/videos/generations"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
   "gpt-6.1-terra": {
     "cache_creation_input_token_cost": 1.25e-06,
     "cache_read_input_token_cost": 5e-08,

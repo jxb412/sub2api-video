@@ -247,9 +247,13 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 	}
 	defer func() {
 		if rec := loadVideoTaskForPersist(ctx, taskID, userID, apiKeyID, s); rec != nil {
-			_ = CompleteVideoTask(ctx, rec.TaskID, rec.UpstreamID, rec.Status, rec.Resolution,
-				rec.VideoURL, rec.ErrorMessage, rec.DurationSeconds,
-				rec.UpstreamCostUSD, rec.BilledCostUSD, rec.BillingMode)
+			billed := 0.0
+			if rec.Status == MinimaxVideoStatusDone {
+				billed = rec.UpstreamCostUSD // local_price 结算在下载阶段覆盖
+			}
+			_ = CompleteVideoTask(ctx, rec.ID, rec.UpstreamID, rec.Status, rec.Resolution,
+				rec.VideoURL, rec.Error, rec.DurationSeconds,
+				rec.UpstreamCostUSD, billed, VideoBillingModeDefault)
 		}
 	}()
 	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {

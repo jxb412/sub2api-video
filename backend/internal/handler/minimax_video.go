@@ -2,11 +2,11 @@ package handler
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -34,7 +34,7 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	reqLog := requestLogger(c, "handler.openai_gateway.minimax_video",
 		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID))
 
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxOpenAIMediaBodyBytes))
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
 	if err != nil || len(body) == 0 {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return

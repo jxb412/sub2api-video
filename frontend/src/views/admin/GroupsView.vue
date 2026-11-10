@@ -1136,6 +1136,21 @@
             <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
               {{ t("admin.groups.videoPricing.modelOverridesTitle") }}
             </p>
+            <div class="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+              <span class="text-sm text-gray-700 dark:text-gray-300">计费模式</span>
+              <select
+                v-model="createForm.video_billing_mode"
+                class="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-dark-600 dark:bg-dark-800"
+              >
+                <option value="local_price">按我方秒单价</option>
+                <option value="upstream_cost">跟随上游成本</option>
+              </select>
+              <span class="text-xs text-gray-500 dark:text-gray-400">
+                {{ createForm.video_billing_mode === 'upstream_cost'
+                  ? '实收 = 上游回传 cost_usd × 视频倍率'
+                  : '实收 = 秒单价 × 时长 × 视频倍率（未配单价时自动跟随上游）' }}
+              </span>
+            </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t("admin.groups.videoPricing.modelOverridesDescription") }}
             </p>

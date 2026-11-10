@@ -612,6 +612,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice720P:                  videoPrice720P,
 		VideoPrice1080P:                 videoPrice1080P,
 		VideoModelPrices:                NormalizeVideoModelPrices(input.VideoModelPrices),
+		VideoBillingMode:                normalizeVideoBillingModeInput(input.VideoBillingMode),
 		WebSearchPricePerCall:           webSearchPricePerCall,
 		SearchPricePer1k:                searchPricePer1k,
 		AudioRealtimePricePerMin:        audioRealtimePricePerMin,
@@ -945,6 +946,10 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	// nil = leave unchanged; empty map = clear per-model prices.
 	if input.VideoModelPrices != nil {
 		group.VideoModelPrices = NormalizeVideoModelPrices(input.VideoModelPrices)
+	}
+
+	if strings.TrimSpace(input.VideoBillingMode) != "" {
+		group.VideoBillingMode = normalizeVideoBillingModeInput(input.VideoBillingMode)
 	}
 	if input.WebSearchPricePerCall != nil {
 		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)
@@ -1544,4 +1549,13 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 	}
 
 	return &ReplaceUserGroupResult{MigratedKeys: migrated}, nil
+}
+
+// normalizeVideoBillingModeInput 只接受两种模式，非法值退回默认，避免脏数据。
+func normalizeVideoBillingModeInput(mode string) string {
+	normalized, ok := NormalizeVideoBillingMode(mode)
+	if !ok {
+		return VideoBillingModeDefault
+	}
+	return normalized
 }

@@ -131,3 +131,34 @@ func (h *OpenAIGatewayHandler) VideoTaskStats(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": stats})
 }
+
+// DownloadVideoTask 供面板下载视频：JWT 鉴权 + 归属校验后回源取流。
+// 网关侧的 /v1/videos/{id}/content 走 API Key 鉴权，这里补一条面板通道。
+func (h *OpenAIGatewayHandler) DownloadVideoTask(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
+		return
+	}
+	taskID := strings.TrimSpace(c.Param("id"))
+	rec, err := service.GetVideoTask(c.Request.Context(), taskID, subject.UserID)
+	if err != nil || rec == nil {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video task not found")
+		return
+	}
+	if rec.Status != service.MinimaxVideoStatusDone || strings.TrimSpace(rec.VideoURL) == "" {
+		h.errorResponse(c, http.StatusConflict, "invalid_request_error", "Video is not ready")
+		return
+	}
+	baseURL, token := h.gatewayService.MinimaxVideoAccountCredentials(c.Request.Context(), rec.AccountID)
+	task := &service.MinimaxVideoTask{
+		ID:         rec.TaskID,
+		Status:     rec.Status,
+		VideoURL:   rec.VideoURL,
+		AccountID:  rec.AccountID,
+		Resolution: rec.Resolution,
+	}
+	if err := h.gatewayService.StreamMinimaxVideoContent(c, task, baseURL, token); err != nil {
+		h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
+	}
+}

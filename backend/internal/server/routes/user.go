@@ -86,6 +86,7 @@ func RegisterUserRoutes(
 		videos.GET("", h.OpenAIGateway.ListVideoTasks)
 		videos.GET("/stats", h.OpenAIGateway.VideoTaskStats)
 		videos.GET("/:id", h.OpenAIGateway.GetVideoTask)
+		videos.GET("/:id/content", h.OpenAIGateway.DownloadVideoTask)
 		videos.DELETE("/:id", h.OpenAIGateway.DeleteVideoTask)
 	}
 	keys := authenticated.Group("/keys")

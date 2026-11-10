@@ -269,8 +269,11 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	}
 	url := task.VideoURL
 	if strings.HasPrefix(url, "/") {
-		// Upstream reports a path relative to its own base URL.
-		url = strings.TrimRight(DefaultGetokenBaseURL, "/") + url
+		// Upstream reports a path that already contains the /v1 prefix, so the
+		// configured base URL must be reduced to its origin before joining.
+		base := strings.TrimRight(DefaultGetokenBaseURL, "/")
+		base = strings.TrimSuffix(base, "/v1")
+		url = base + url
 	}
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
 	if err != nil {

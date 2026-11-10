@@ -1937,6 +1937,23 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		return configured["seedance"] && a.Platform == PlatformOpenAI && a.Type == AccountTypeAPIKey &&
 			strings.TrimSpace(a.GetCredential("base_url")) != ""
 	}
+	// MiniMax-style video providers (H3 & friends) are plain API-key accounts.
+	// They need an explicit capability flag plus a base URL and key, and they are
+	// usually configured on the MiniMax platform rather than OpenAI.
+	if capability == OpenAIEndpointCapabilityMinimaxVideo {
+		configured, _ := a.openAIEndpointCapabilitySet()
+		if !configured["minimax_video"] {
+			return false
+		}
+		if a.Type != AccountTypeAPIKey {
+			return false
+		}
+		if a.Platform != PlatformMiniMax && a.Platform != PlatformOpenAI {
+			return false
+		}
+		return strings.TrimSpace(a.GetCredential("base_url")) != "" &&
+			strings.TrimSpace(a.GetCredential("api_key")) != ""
+	}
 	if capability == "" {
 		return true
 	}

@@ -1822,6 +1822,17 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 		return false, "channel_upstream_restricted"
 	}
 	if !accountSupportsOpenAICapabilities(account, req.RequiredCapability, req.RequiredImageCapability) {
+		configured, found := account.openAIEndpointCapabilitySet()
+		slog.Warn("scheduler.capability_probe",
+			"required_capability", string(req.RequiredCapability),
+			"required_image_capability", string(req.RequiredImageCapability),
+			"account_id", account.ID,
+			"account_platform", account.Platform,
+			"account_type", account.Type,
+			"configured_present", found,
+			"configured", configured,
+			"openai_compatible", account.IsOpenAICompatible(),
+			"requested_model", req.RequestedModel)
 		return false, "capability_mismatch"
 	}
 	if vetoed, reason := openAIImageSizeVetoReason(ctx, account); vetoed {

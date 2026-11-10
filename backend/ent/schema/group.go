@@ -146,12 +146,6 @@ func (Group) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "decimal(10,4)"}).
 			Default(1.0).
 			Comment("视频生成独立倍率，仅 video_rate_independent=true 时生效"),
-		field.String("video_billing_mode").
-			Default("local_price").
-			Comment("video billing mode: local_price or upstream_cost"),
-		field.JSON("video_resolution_tiers", map[string]string{}).
-			Optional().
-			Comment("override resolution tier map such as 768p->720p"),
 		field.Float("video_price_480p").
 			Optional().
 			Nillable().

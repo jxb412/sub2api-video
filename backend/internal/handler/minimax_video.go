@@ -107,6 +107,8 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	task.BillingMode = service.VideoBillingModeDefault
 	task.RateMultiplier = 1
 	if apiKey.Group != nil {
+		settings := service.VideoBillingSettingsFor(apiKey.Group)
+		task.BillingMode = settings.Mode
 		if apiKey.Group.VideoBillingMode != "" {
 			task.BillingMode = apiKey.Group.VideoBillingMode
 		}
@@ -114,7 +116,7 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 			task.RateMultiplier = apiKey.Group.VideoRateMultiplier
 		}
 		if price := service.LookupVideoModelPriceWithTiers(apiKey.Group.VideoModelPrices,
-			apiKey.Group.VideoResolutionTiers, info.Model, info.Resolution); price != nil {
+			service.VideoBillingSettingsFor(apiKey.Group).Tiers, info.Model, info.Resolution); price != nil {
 			task.PricePerSecond = *price
 		}
 	}

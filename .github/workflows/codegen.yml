@@ -1,0 +1,61 @@
+name: Ent Codegen
+
+# ent 的代码生成需要 Go 工具链，而开发机与测试机都不一定有空间/工具链。
+# 这个工作流在 GitHub Actions 上跑 `ent generate`，并把结果直接提交回 main，
+# 这样任何 schema 改动只需点一次按钮即可产出与提交生成代码。
+on:
+  workflow_dispatch:
+    inputs:
+      commit_message:
+        description: 'Commit message for the generated code'
+        required: false
+        default: 'chore(ent): regenerate code from schema'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ent-codegen
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    name: ent generate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: backend/go.sum
+
+      - name: Install ent CLI
+        run: go install entgo.io/ent/cmd/ent@latest
+
+      - name: Generate
+        run: |
+          "$(go env GOPATH)/bin/ent" generate ./ent/schema --target ./ent
+          echo "--- changed files ---"
+          git status --porcelain
+
+      - name: Commit generated code
+        working-directory: .
+        run: |
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          git config user.name  "quya-codegen-bot"
+          git config user.email "codegen-bot@quya.local"
+          git add -A
+          git commit -m "${{ inputs.commit_message }}"
+          git push origin HEAD:main
+
+      - name: Verify build
+        run: go build ./...

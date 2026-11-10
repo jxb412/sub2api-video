@@ -1941,18 +1941,29 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	// They need an explicit capability flag plus a base URL and key, and they are
 	// usually configured on the MiniMax platform rather than OpenAI.
 	if capability == OpenAIEndpointCapabilityMinimaxVideo {
-		configured, _ := a.openAIEndpointCapabilitySet()
-		if !configured["minimax_video"] {
+		configured, found := a.openAIEndpointCapabilitySet()
+		enabled := configured["minimax_video"]
+		hasBase := strings.TrimSpace(a.GetCredential("base_url")) != ""
+		hasKey := strings.TrimSpace(a.GetCredential("api_key")) != ""
+		// A single debug line makes the scheduling decision auditable: without it
+		// a capability mismatch is indistinguishable from an empty pool.
+		slog.Debug("minimax_video.capability_check",
+			"account_id", a.ID,
+			"platform", a.Platform,
+			"type", a.Type,
+			"credentials_present", found,
+			"capability_enabled", enabled,
+			"has_base_url", hasBase,
+			"has_api_key", hasKey)
+		if !enabled {
 			return false
 		}
-		if a.Type != AccountTypeAPIKey {
+		if !hasBase || !hasKey {
 			return false
 		}
-		if a.Platform != PlatformMiniMax && a.Platform != PlatformOpenAI {
-			return false
-		}
-		return strings.TrimSpace(a.GetCredential("base_url")) != "" &&
-			strings.TrimSpace(a.GetCredential("api_key")) != ""
+		// MiniMax video accounts may be registered on either platform; only the
+		// credential shape is authoritative here.
+		return a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream
 	}
 	if capability == "" {
 		return true

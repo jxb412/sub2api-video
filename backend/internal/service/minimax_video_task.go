@@ -245,6 +245,13 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 		})
 		return
 	}
+	defer func() {
+		if rec := loadVideoTaskForPersist(ctx, taskID, userID, apiKeyID, s); rec != nil {
+			_ = CompleteVideoTask(ctx, rec.TaskID, rec.UpstreamID, rec.Status, rec.Resolution,
+				rec.VideoURL, rec.ErrorMessage, rec.DurationSeconds,
+				rec.UpstreamCostUSD, rec.BilledCostUSD, rec.BillingMode)
+		}
+	}()
 	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
 		task.Status = MinimaxVideoStatusDone
 		task.UpstreamID = result.UpstreamID
@@ -318,4 +325,17 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	c.Status(http.StatusOK)
 	_, err = io.Copy(c.Writer, resp.Body)
 	return err
+}
+
+// loadVideoTaskForPersist reads the in-cache task so the DB row can be updated
+// from the same snapshot (keeps cache and table consistent).
+func loadVideoTaskForPersist(ctx context.Context, taskID string, userID, apiKeyID int64, s *OpenAIGatewayService) *MinimaxVideoTask {
+	if s == nil {
+		return nil
+	}
+	task, err := s.LoadMinimaxVideoTask(ctx, taskID, userID, apiKeyID)
+	if err != nil || task == nil {
+		return nil
+	}
+	return task
 }

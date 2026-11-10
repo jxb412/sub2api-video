@@ -710,6 +710,14 @@ func registerSubscriptionRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 }
 
 func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	videoTasks := admin.Group("/videos")
+	{
+		videoTasks.GET("", h.OpenAIGateway.ListVideoTasks)
+		videoTasks.GET("/stats", h.OpenAIGateway.VideoTaskStats)
+		videoTasks.GET("/:id", h.OpenAIGateway.GetVideoTask)
+		videoTasks.DELETE("/:id", h.OpenAIGateway.DeleteVideoTask)
+		videoTasks.POST("/:id/fail", h.OpenAIGateway.FailVideoTask)
+	}
 	usage := admin.Group("/usage")
 	{
 		usage.GET("", h.Admin.Usage.List)

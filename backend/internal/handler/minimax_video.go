@@ -102,6 +102,23 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	if apiKey.GroupID != nil {
 		task.GroupID = *apiKey.GroupID
 	}
+	if err := service.CreateVideoTask(requestCtx, service.VideoTaskRecord{
+		TaskID:          task.ID,
+		Provider:        "minimax",
+		Model:           task.Model,
+		UpstreamModel:   task.UpstreamModel,
+		Prompt:          task.Prompt,
+		Status:          task.Status,
+		Resolution:      task.Resolution,
+		DurationSeconds: task.DurationSeconds,
+		UserID:          subject.UserID,
+		APIKeyID:        apiKey.ID,
+		GroupID:         task.GroupID,
+		AccountID:       account.ID,
+		BillingMode:     service.VideoBillingModeDefault,
+	}); err != nil {
+		reqLog.Warn("minimax_video.task_persist_failed", zap.Error(err))
+	}
 	if err := h.gatewayService.StoreMinimaxVideoTask(requestCtx, task); err != nil {
 		reqLog.Warn("minimax_video.task_store_failed", zap.Error(err))
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to create video task")

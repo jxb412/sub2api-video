@@ -80,7 +80,15 @@ func RegisterUserRoutes(
 		}
 
 		// API Key管理
-		keys := authenticated.Group("/keys")
+		// 视频任务（用户端）
+	videos := authenticated.Group("/videos")
+	{
+		videos.GET("", h.OpenAIGateway.ListVideoTasks)
+		videos.GET("/stats", h.OpenAIGateway.VideoTaskStats)
+		videos.GET("/:id", h.OpenAIGateway.GetVideoTask)
+		videos.DELETE("/:id", h.OpenAIGateway.DeleteVideoTask)
+	}
+	keys := authenticated.Group("/keys")
 		{
 			keys.GET("", h.APIKey.List)
 			keys.GET("/:id", h.APIKey.GetByID)

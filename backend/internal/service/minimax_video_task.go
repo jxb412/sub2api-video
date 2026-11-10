@@ -235,6 +235,7 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
 		task.Status = MinimaxVideoStatusProcessing
 	})
+
 	result, err := ExecuteMinimaxVideoTask(ctx, MinimaxVideoUpstreamClient(0), targetURL, bearerToken, body)
 	if err != nil {
 		slog.Warn("minimax_video.task_failed", "task_id", taskID, "error", err, "elapsed", time.Since(started))
@@ -243,23 +244,12 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 			task.Error = err.Error()
 			task.CompletedAt = GrokVideoPendingCreatedAtNow()
 		})
+		// 失败也必须落库，否则面板一直显示「排队中」、下载接口持续 409。
+		_ = CompleteVideoTask(ctx, taskID, "", MinimaxVideoStatusError, "", "",
+			err.Error(), 0, 0, 0, VideoBillingModeDefault)
 		return
 	}
-	defer func() {
-		if rec := loadVideoTaskForPersist(ctx, taskID, userID, apiKeyID, s); rec != nil {
-			billed := 0.0
-			if rec.Status == MinimaxVideoStatusDone {
-				billed = rec.UpstreamCostUSD // local_price 结算在下载阶段覆盖
-			}
-			_ = CompleteVideoTask(ctx, rec.ID, rec.UpstreamID, rec.Status, rec.Resolution,
-				rec.VideoURL, rec.Error, rec.DurationSeconds,
-				rec.UpstreamCostUSD, billed, VideoBillingModeDefault)
-			// 结算：写回金额 + 记 usage_logs + 扣费
-			if rec.Status == MinimaxVideoStatusDone {
-				s.SettleMinimaxVideoTask(ctx, *rec)
-			}
-		}
-	}()
+
 	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
 		task.Status = MinimaxVideoStatusDone
 		task.UpstreamID = result.UpstreamID
@@ -273,6 +263,22 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 		}
 		task.CompletedAt = GrokVideoPendingCreatedAtNow()
 	})
+
+	// 从缓存读回完整快照（含提交时的计费参数），一次性落库并结算。
+	rec, loadErr := s.LoadMinimaxVideoTask(ctx, taskID, userID, apiKeyID)
+	if loadErr != nil || rec == nil {
+		slog.Warn("minimax_video.task_reload_failed", "task_id", taskID, "error", loadErr)
+		// 退化为用上游结果直接落库，保证面板可见、可下载。
+		_ = CompleteVideoTask(ctx, taskID, result.UpstreamID, MinimaxVideoStatusDone,
+			result.Resolution, result.VideoURL, "", result.DurationSeconds,
+			result.UpstreamCostUSD, result.UpstreamCostUSD, VideoBillingModeDefault)
+	} else {
+		_ = CompleteVideoTask(ctx, rec.ID, rec.UpstreamID, rec.Status, rec.Resolution,
+			rec.VideoURL, rec.Error, rec.DurationSeconds,
+			rec.UpstreamCostUSD, rec.UpstreamCostUSD, VideoBillingModeDefault)
+		s.SettleMinimaxVideoTask(ctx, *rec)
+	}
+
 	slog.Info("minimax_video.task_done", "task_id", taskID, "elapsed", time.Since(started),
 		"upstream_cost_usd", result.UpstreamCostUSD)
 }
@@ -335,16 +341,4 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	return err
 }
 
-// loadVideoTaskForPersist reads the in-cache task so the DB row can be updated
-// from the same snapshot (keeps cache and table consistent).
-func loadVideoTaskForPersist(ctx context.Context, taskID string, userID, apiKeyID int64, s *OpenAIGatewayService) *MinimaxVideoTask {
-	if s == nil {
-		return nil
-	}
-	task, err := s.LoadMinimaxVideoTask(ctx, taskID, userID, apiKeyID)
-	if err != nil || task == nil {
-		return nil
-	}
-	return task
-}
 

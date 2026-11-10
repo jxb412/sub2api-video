@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"os"
-	"sync"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -1228,10 +1226,11 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		return
 	}
 
-	// Fallback to default models (merged with the hot-reloadable catalogue so a
-	// new model only needs a JSON publish, not a new image).
+	// Fallback to the compiled defaults. Real deployments list models from the
+	// account model mapping, so a new model only needs a mapping edit; the
+	// compiled slice is just the last-resort default.
 	if platform == service.PlatformOpenAI {
-		writeOpenAIModelsList(c, catalogModelIDs(service.PlatformOpenAI, openai.DefaultModelIDs()))
+		writeModelsListResponse(c, openai.DefaultModels)
 		return
 	}
 
@@ -1509,55 +1508,6 @@ func defaultCodexModelIDsForPlatform(platform string) []string {
 	default:
 		return defaultModelIDsForPlatform(platform)
 	}
-}
-
-// modelCatalog is the hot-reloadable catalogue shared by the models endpoint.
-// It is initialised lazily from the environment so a new model can be published
-// by editing a JSON document instead of shipping a new image.
-var (
-	modelCatalogOnce sync.Once
-	modelCatalogInst *service.ModelCatalog
-)
-
-func sharedModelCatalog() *service.ModelCatalog {
-	modelCatalogOnce.Do(func() {
-		url := strings.TrimSpace(os.Getenv("MODEL_CATALOG_URL"))
-		path := strings.TrimSpace(os.Getenv("MODEL_CATALOG_PATH"))
-		if path == "" {
-			path = "data/model_catalog.json"
-		}
-		interval := service.ModelCatalogIntervalFromEnv(os.Getenv("MODEL_CATALOG_INTERVAL"))
-		modelCatalogInst = service.NewModelCatalog(url, path, interval)
-	})
-	return modelCatalogInst
-}
-
-// catalogModelIDs returns catalogue entries for a platform, already merged with
-// the compiled-in defaults so removing the remote document degrades gracefully.
-func catalogModelIDs(platform string, defaults []string) []string {
-	catalog := sharedModelCatalog()
-	extra := catalog.IDsForPlatform(platform)
-	if len(extra) == 0 {
-		return defaults
-	}
-	seen := make(map[string]struct{}, len(defaults)+len(extra))
-	out := make([]string, 0, len(defaults)+len(extra))
-	for _, id := range defaults {
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	for _, id := range extra {
-		key := strings.ToLower(id)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }
 
 func defaultModelIDsForPlatform(platform string) []string {

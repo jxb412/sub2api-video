@@ -67,6 +67,7 @@ type MinimaxVideoSettlement struct {
 	BilledCost   float64 `json:"billed_cost_usd"`
 	UpstreamCost float64 `json:"upstream_cost_usd"`
 	PriceSource  string  `json:"price_source"`
+	BaseCost     float64 `json:"base_cost_usd"`
 }
 
 func ComputeMinimaxVideoSettlement(task MinimaxVideoTask, mode string, prices map[string]map[string]float64, rateMultiplier float64) MinimaxVideoSettlement {
@@ -74,6 +75,11 @@ func ComputeMinimaxVideoSettlement(task MinimaxVideoTask, mode string, prices ma
 	out := MinimaxVideoSettlement{BillingMode: normalized, UpstreamCost: task.UpstreamCostUSD}
 	if rateMultiplier < 0 {
 		rateMultiplier = 1
+	}
+	if normalized == VideoBillingModeUsageTokens {
+		out.BaseCost = float64(task.InputTokens)*task.InputPricePerToken + float64(task.OutputTokens)*task.OutputPricePerToken
+		out.BilledCost, out.PriceSource = QuantizeUsageBillingAmount(out.BaseCost*rateMultiplier), "token_usage"
+		return out
 	}
 	// Old snapshots did not distinguish a missing multiplier from explicit 0.
 	if task.BillingSnapshot == nil && rateMultiplier == 0 {
@@ -110,7 +116,7 @@ func minimaxVideoBillingCommand(task MinimaxVideoTask, settlement MinimaxVideoSe
 	}
 	p := task.BillingSnapshot
 	cmd := &UsageBillingCommand{RequestID: task.ID, UserID: task.UserID, APIKeyID: task.APIKeyID,
-		AccountID: task.AccountID, AccountType: p.AccountType, Model: task.Model, MediaType: "video"}
+		AccountID: task.AccountID, AccountType: p.AccountType, Model: firstNonEmptyString(task.BillingModel, task.Model), MediaType: "video"}
 	if p.SimpleMode {
 		if p.SimpleModeKeyRateLimitEnabled && p.APIKeyRateLimits {
 			cmd.APIKeyRateLimitCost = settlement.BilledCost
@@ -133,7 +139,11 @@ func minimaxVideoBillingCommand(task MinimaxVideoTask, settlement MinimaxVideoSe
 		cmd.APIKeyRateLimitCost = settlement.BilledCost
 	}
 	if p.AccountQuota {
-		cmd.AccountQuotaCost = settlement.UpstreamCost * p.AccountRateMultiplier
+		base := settlement.UpstreamCost
+		if task.BillingMode == VideoBillingModeUsageTokens && !task.UpstreamCostReported {
+			base = settlement.BaseCost
+		}
+		cmd.AccountQuotaCost = base * p.AccountRateMultiplier
 		cmd.AccountQuotaHasDailyLimit = p.AccountDailyQuota
 		cmd.AccountQuotaHasWeeklyLimit = p.AccountWeeklyQuota
 	}
@@ -148,6 +158,15 @@ func (s *OpenAIGatewayService) settleMinimaxVideoTask(ctx context.Context, task 
 	if s == nil || task.Status != MinimaxVideoStatusDone || task.VideoURL == "" {
 		return settlement, fmt.Errorf("video is not complete")
 	}
+	if task.BillingMode == VideoBillingModeUsageTokens && (!task.TokenPricingConfigured || !task.UsageReported) {
+		return settlement, fmt.Errorf("Seedance token price or final usage is unavailable; settlement pending")
+	}
+	if task.BillingMode == VideoBillingModeLocalPrice && !task.PriceConfigured {
+		return settlement, fmt.Errorf("video local price is unavailable; settlement pending")
+	}
+	if task.BillingMode == VideoBillingModeUpstreamCost && !task.UpstreamCostReported && task.UpstreamCostUSD == 0 {
+		return settlement, fmt.Errorf("upstream cost was not reported; settlement pending")
+	}
 	if s.usageBillingRepo == nil || s.usageLogRepo == nil {
 		return settlement, fmt.Errorf("video billing repository unavailable")
 	}
@@ -157,6 +176,9 @@ func (s *OpenAIGatewayService) settleMinimaxVideoTask(ctx context.Context, task 
 	}
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
+	if err := s.maintainVideoSubscriptionWindows(billingCtx, task, cmd); err != nil {
+		return settlement, err
+	}
 	result, err := s.usageBillingRepo.Apply(billingCtx, cmd)
 	if err != nil {
 		return settlement, err
@@ -201,6 +223,35 @@ func (s *OpenAIGatewayService) settleMinimaxVideoTask(ctx context.Context, task 
 	return settlement, nil
 }
 
+// Generation may finish days after admission. Advance the subscription windows
+// before charging so the next authenticated request cannot erase this payment
+// while cleaning up an old window. Reuse the normal conditional reset policy,
+// including daily-card and final partial-window exemptions.
+func (s *OpenAIGatewayService) maintainVideoSubscriptionWindows(ctx context.Context, task MinimaxVideoTask, cmd *UsageBillingCommand) error {
+	if cmd.SubscriptionID == nil || cmd.SubscriptionCost <= 0 || s.cfg == nil || !s.cfg.SubscriptionMaintenance.AutoResetEnabled {
+		return nil
+	}
+	if s.userSubRepo == nil {
+		return fmt.Errorf("video subscription repository unavailable")
+	}
+	sub, err := s.userSubRepo.GetByID(ctx, *cmd.SubscriptionID)
+	if err != nil {
+		return err
+	}
+	if sub == nil || sub.UserID != task.UserID || sub.GroupID != task.GroupID {
+		return fmt.Errorf("video subscription ownership changed")
+	}
+	billing := s.billingCacheService
+	if billing == nil {
+		billing = videoBillingCacheHandle()
+	}
+	// No extra cache or worker is allocated: this delegates only synchronous
+	// maintenance through the same repository and billing-cache invalidations.
+	maintenance := &SubscriptionService{userSubRepo: s.userSubRepo, billingCacheService: billing, autoResetEnabled: true, now: time.Now}
+	_, err = maintenance.EnsureWindowMaintenance(ctx, sub)
+	return err
+}
+
 func (s *OpenAIGatewayService) SettleMinimaxVideoTask(ctx context.Context, task MinimaxVideoTask) MinimaxVideoSettlement {
 	settlement, err := s.settleMinimaxVideoTask(ctx, task)
 	if err != nil {
@@ -211,6 +262,12 @@ func (s *OpenAIGatewayService) SettleMinimaxVideoTask(ctx context.Context, task 
 
 func (s *OpenAIGatewayService) writeMinimaxVideoUsageLog(ctx context.Context, task MinimaxVideoTask, settlement MinimaxVideoSettlement, cmd *UsageBillingCommand) error {
 	mode, endpoint, mediaType := string(BillingModeVideo), "/v1/videos/generations", "video"
+	if task.Provider == VideoProviderSeedance {
+		endpoint = "/api/v3/contents/generations/tasks"
+	}
+	if task.BillingMode == VideoBillingModeUsageTokens {
+		mode = string(BillingModeToken)
+	}
 	durationMs := 0
 	if start, err := time.Parse(time.RFC3339Nano, task.CreatedAt); err == nil {
 		if end, err := time.Parse(time.RFC3339Nano, task.CompletedAt); err == nil {
@@ -229,16 +286,24 @@ func (s *OpenAIGatewayService) writeMinimaxVideoUsageLog(ctx context.Context, ta
 	if settlement.PriceSource == "group_price" {
 		totalCost = task.PricePerSecond * float64(duration)
 	}
+	if settlement.PriceSource == "token_usage" {
+		totalCost = settlement.BaseCost
+		if !task.UpstreamCostReported {
+			accountCost = QuantizeUsageBillingAmount(totalCost * accountRate)
+		}
+	}
 	created := time.Now().UTC()
 	if completed, err := time.Parse(time.RFC3339Nano, task.CompletedAt); err == nil {
 		created = completed
 	}
 	_, err := s.usageLogRepo.Create(ctx, &UsageLog{
 		UserID: task.UserID, APIKeyID: task.APIKeyID, AccountID: task.AccountID, RequestID: task.ID,
-		Model: task.Model, RequestedModel: task.Model, UpstreamModel: &upstreamModel, GroupID: groupID,
+		Model: firstNonEmptyString(task.BillingModel, task.Model), RequestedModel: task.Model, UpstreamModel: &upstreamModel, GroupID: groupID,
 		SubscriptionID: cmd.SubscriptionID, BillingType: cmd.BillingType, BillingMode: &mode,
 		RequestType: RequestTypeSync, InboundEndpoint: &endpoint, DurationMs: &durationMs,
 		MediaType: &mediaType, VideoCount: 1, VideoResolution: &resolution, VideoDurationSeconds: &duration,
+		InputTokens: task.InputTokens, OutputTokens: task.OutputTokens,
+		InputCost: float64(task.InputTokens) * task.InputPricePerToken, OutputCost: float64(task.OutputTokens) * task.OutputPricePerToken,
 		TotalCost: totalCost, ActualCost: settlement.BilledCost, RateMultiplier: task.RateMultiplier,
 		AccountRateMultiplier: &accountRate, AccountStatsCost: &accountCost, CreatedAt: created,
 	})

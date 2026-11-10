@@ -55,6 +55,9 @@ func ParseSeedanceRequest(body []byte) (GrokMediaRequestInfo, error) {
 }
 
 func buildSeedanceURL(base string, endpoint GrokMediaEndpoint, taskID string) (string, error) {
+	if err := validateSeedanceBaseURL(base); err != nil {
+		return "", err
+	}
 	base = strings.TrimRight(base, "/")
 	// Accept an origin, a proxy prefix, or the full Ark API base.
 	if !strings.HasSuffix(base, "/api/v3") && !strings.HasSuffix(base, "/v3") {

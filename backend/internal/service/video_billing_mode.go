@@ -12,6 +12,7 @@ const (
 	// VideoBillingModeUpstreamCost charges exactly what the upstream provider
 	// reported as cost_usd, so the gateway never invents a price.
 	VideoBillingModeUpstreamCost = "upstream_cost"
+	VideoBillingModeUsageTokens  = "usage_tokens"
 
 	// VideoBillingModeDefault is used when a group leaves the field empty.
 	VideoBillingModeDefault = VideoBillingModeLocalPrice
@@ -25,6 +26,8 @@ func NormalizeVideoBillingMode(mode string) (string, bool) {
 		return VideoBillingModeLocalPrice, true
 	case VideoBillingModeUpstreamCost, "upstream", "cost", "cost_usd", "upstreamcost":
 		return VideoBillingModeUpstreamCost, true
+	case VideoBillingModeUsageTokens:
+		return VideoBillingModeUsageTokens, true
 	default:
 		return VideoBillingModeDefault, false
 	}

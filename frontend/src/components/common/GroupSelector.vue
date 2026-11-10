@@ -72,6 +72,7 @@ interface Props {
   groups: (Group & { account_count?: number })[]
   platform?: GroupPlatform // Optional platform filter
   mixedScheduling?: boolean // For antigravity accounts: allow anthropic/gemini groups
+  minimaxVideoCapable?: boolean // Explicit OpenAI video relays can serve MiniMax groups.
   searchable?: boolean | 'auto'
 }
 
@@ -102,7 +103,8 @@ const filteredGroups = computed(() => {
       )
     } else {
       // 默认：只能选择同 platform 的分组；composite 分组可接收任意具体平台账号
-      result = result.filter((g) => g.platform === props.platform || g.platform === 'composite')
+      result = result.filter((g) => g.platform === props.platform || g.platform === 'composite'
+        || (props.platform === 'openai' && props.minimaxVideoCapable && g.platform === 'minimax'))
     }
   }
   if (isSearchable.value && searchText.value) {

@@ -3,12 +3,13 @@ package service
 import (
 	"bytes"
 	"context"
+	"database/sql/driver"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -117,11 +118,15 @@ func MinimaxVideoUpstreamClient(timeout time.Duration) *http.Client {
 // the result into a terminal task state. It does not touch the cache, so callers
 // can run it inside their own worker.
 func ExecuteMinimaxVideoTask(ctx context.Context, client *http.Client, targetURL, bearerToken string, body []byte) (MinimaxVideoTask, error) {
-	var task MinimaxVideoTask
 	if client == nil {
 		client = MinimaxVideoUpstreamClient(0)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	return requestMinimaxVideo(ctx, http.MethodPost, targetURL, bearerToken, body, nil, client.Do)
+}
+
+func requestMinimaxVideo(ctx context.Context, method, targetURL, bearerToken string, body []byte, account *Account, do func(*http.Request) (*http.Response, error)) (MinimaxVideoTask, error) {
+	var task MinimaxVideoTask
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(body))
 	if err != nil {
 		return task, fmt.Errorf("build minimax video request: %w", err)
 	}
@@ -130,14 +135,20 @@ func ExecuteMinimaxVideoTask(ctx context.Context, client *http.Client, targetURL
 	if token := strings.TrimSpace(bearerToken); token != "" {
 		req.Header.Set("authorization", "Bearer "+token)
 	}
-	resp, err := client.Do(req)
+	if account != nil {
+		account.ApplyHeaderOverrides(req.Header)
+	}
+	resp, err := do(req)
 	if err != nil {
 		return task, fmt.Errorf("call minimax video upstream: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
 	if err != nil {
 		return task, fmt.Errorf("read minimax video upstream: %w", err)
+	}
+	if len(payload) > 8<<20 {
+		return task, fmt.Errorf("minimax video response exceeds size limit")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return task, &MinimaxVideoUpstreamError{StatusCode: resp.StatusCode, Body: payload}
@@ -146,7 +157,7 @@ func ExecuteMinimaxVideoTask(ctx context.Context, client *http.Client, targetURL
 	if err != nil {
 		return task, err
 	}
-	if parsed.Status == MinimaxVideoStatusError {
+	if parsed.Status == MinimaxVideoStatusError && method == http.MethodPost {
 		msg := parsed.Error
 		if msg == "" {
 			msg = "upstream reported an error"
@@ -159,6 +170,29 @@ func ExecuteMinimaxVideoTask(ctx context.Context, client *http.Client, targetURL
 		return parsed, nil
 	}
 	return parsed, nil
+}
+
+// Use the same account transport as other gateway calls, including proxy and
+// operator header overrides. Credentials are loaded anew before every poll.
+func (s *OpenAIGatewayService) callMinimaxVideo(ctx context.Context, account *Account, method, target string, body []byte) (MinimaxVideoTask, error) {
+	if account == nil || strings.TrimSpace(account.GetCredential("api_key")) == "" {
+		return MinimaxVideoTask{}, fmt.Errorf("minimax video account credential unavailable")
+	}
+	ctx = WithHTTPUpstreamRedirectsDisabled(ctx)
+	if method == http.MethodPost {
+		ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileVideo)
+	}
+	do := MinimaxVideoUpstreamClient(20 * time.Minute).Do
+	if s.httpUpstream != nil {
+		proxy := ""
+		if account.Proxy != nil {
+			proxy = account.Proxy.URL()
+		}
+		do = func(req *http.Request) (*http.Response, error) {
+			return s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
+		}
+	}
+	return requestMinimaxVideo(ctx, method, target, account.GetCredential("api_key"), body, account, do)
 }
 
 // MinimaxVideoUpstreamError carries the upstream status and body so handlers can
@@ -208,7 +242,7 @@ func MinimaxVideoTaskStatusBody(task MinimaxVideoTask, contentPath string) []byt
 	if task.Error != "" {
 		out["error"] = map[string]any{"message": task.Error, "type": "upstream_error"}
 	}
-	if task.UpstreamCostUSD > 0 {
+	if task.UpstreamCostReported || task.UpstreamCostUSD > 0 {
 		out["usage"] = map[string]any{"upstream_cost_usd": task.UpstreamCostUSD}
 	}
 	if task.CompletedAt != "" {
@@ -243,7 +277,10 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 			slog.Error("minimax_video.worker_panic", "task_id", taskID, "panic", recovered)
 			cleanup, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_, _ = FailPendingVideoTask(cleanup, taskID, "Video worker interrupted")
+			task, err := s.LoadMinimaxVideoTask(cleanup, taskID, userID, apiKeyID)
+			if err == nil && task != nil && task.UpstreamID == "" {
+				_, _ = FailPendingVideoTask(cleanup, taskID, "Video worker interrupted")
+			}
 		}
 	}()
 	claimed, err := claimMinimaxVideoTask(ctx, taskID, userID, apiKeyID)
@@ -256,75 +293,54 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 		slog.Error("minimax_video.task_load_failed", "task_id", taskID, "error", err)
 		return
 	}
-	// Keep the billing snapshot in memory for the entire call, so Redis loss
-	// after the upstream has charged us cannot lose the payer or price.
+	// Keep the immutable billing snapshot for submission. Polling always reloads
+	// durable state so an operator's terminal decision cannot be overwritten.
 	workCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
-	client := MinimaxVideoUpstreamClient(20 * time.Minute)
-	result, runErr := ExecuteMinimaxVideoTask(workCtx, client, targetURL, bearerToken, body)
-	for runErr == nil && !result.IsTerminal() {
-		if result.UpstreamID == "" {
-			runErr = fmt.Errorf("upstream pending response has no task id")
-			break
-		}
-		if result.UpstreamID != "" {
-			task.UpstreamID = result.UpstreamID
-		}
-		task.Status = MinimaxVideoStatusProcessing
-		if err := s.StoreMinimaxVideoTask(workCtx, *task); err != nil {
-			slog.Warn("minimax_video.progress_persist_failed", "task_id", taskID, "error", err)
-			return
-		}
-		select {
-		case <-workCtx.Done():
-			runErr = workCtx.Err()
-		case <-time.After(5 * time.Second):
-			result, runErr = pollMinimaxVideoUpstream(workCtx, client, targetURL, bearerToken, task.UpstreamID)
-		}
+	account, base, runErr := s.minimaxTaskAccount(workCtx, task.AccountID)
+	var result MinimaxVideoTask
+	if runErr == nil {
+		targetURL, runErr = BuildMinimaxVideoURL(base, MinimaxVideoEndpointCreate, "")
 	}
-	if runErr == nil && (result.Status != MinimaxVideoStatusDone || strings.TrimSpace(result.VideoURL) == "") {
-		runErr = fmt.Errorf("upstream did not return a completed video")
+	if runErr == nil {
+		result, runErr = s.callMinimaxVideo(workCtx, account, http.MethodPost, targetURL, body)
 	}
-	task.CompletedAt = GrokVideoPendingCreatedAtNow()
+	if runErr == nil && result.Status == MinimaxVideoStatusDone {
+		runErr = s.validateMinimaxCompletedResult(result, base)
+	}
+	if runErr == nil && !result.IsTerminal() && result.UpstreamID == "" {
+		runErr = fmt.Errorf("upstream pending response has no task id")
+	}
 	if runErr != nil {
 		task.Status = MinimaxVideoStatusError
-		// Detailed upstream bodies belong in server logs, not public task state.
-		task.Error = "Video generation failed or timed out"
+		task.Error = "Video submission failed; do not automatically retry an ambiguous submission"
+		task.CompletedAt = GrokVideoPendingCreatedAtNow()
 		slog.Warn("minimax_video.task_failed", "task_id", taskID, "error", runErr)
 	} else {
-		task.Status = MinimaxVideoStatusDone
-		if result.UpstreamID != "" {
-			task.UpstreamID = result.UpstreamID
-		}
-		task.VideoURL = result.VideoURL
-		task.UpstreamCostUSD = result.UpstreamCostUSD
-		if result.Resolution != "" {
-			task.Resolution = result.Resolution
-		}
-		if result.DurationSeconds > 0 {
-			task.DurationSeconds = result.DurationSeconds
-		}
+		mergeVideoProviderResult(task, result)
 	}
-	// The generation context may have expired. Persist the outcome independently.
-	persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer persistCancel()
-	var persistErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		persistErr = s.StoreMinimaxVideoTask(persistCtx, *task)
-		if persistErr == nil || errors.Is(persistErr, ErrVideoTaskTerminal) {
-			break
+	if err := s.persistVideoOutcome(*task); err != nil || task.IsTerminal() {
+		if err != nil {
+			slog.Warn("minimax_video.outcome_persist_failed", "task_id", taskID, "error", err)
 		}
-		select {
-		case <-persistCtx.Done():
-		case <-time.After(time.Duration(attempt+1) * time.Second):
-		}
-	}
-	if persistErr != nil {
-		slog.Error("minimax_video.terminal_persist_failed", "task_id", taskID, "error", persistErr)
 		return
 	}
-	if task.Status == MinimaxVideoStatusDone {
-		s.SettleMinimaxVideoTask(persistCtx, *task)
+	// A known provider ID is never resubmitted. Lookup failures and local worker
+	// deadlines leave the durable pending task available for restart recovery.
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-workCtx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := s.PollMinimaxVideoTask(workCtx, task); err != nil {
+			slog.Warn("minimax_video.poll_retry_pending", "task_id", taskID, "error", err)
+		}
+		if task.IsTerminal() {
+			return
+		}
 	}
 }
 
@@ -334,28 +350,178 @@ func pollMinimaxVideoUpstream(ctx context.Context, client *http.Client, createUR
 	if err != nil {
 		return MinimaxVideoTask{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	if err != nil {
-		return MinimaxVideoTask{}, err
+	if client == nil {
+		client = MinimaxVideoUpstreamClient(30 * time.Second)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		return MinimaxVideoTask{}, err
-	}
-	defer resp.Body.Close()
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return MinimaxVideoTask{}, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return MinimaxVideoTask{}, &MinimaxVideoUpstreamError{StatusCode: resp.StatusCode, Body: payload}
-	}
-	result, err := ParseMinimaxVideoUpstreamResponse(payload)
+	result, err := requestMinimaxVideo(ctx, http.MethodGet, target, token, nil, nil, client.Do)
 	if result.UpstreamID == "" {
 		result.UpstreamID = upstreamID
 	}
+	if err == nil && result.UpstreamID != upstreamID {
+		return MinimaxVideoTask{}, fmt.Errorf("minimax poll returned a different task ID")
+	}
 	return result, err
+}
+
+func (s *OpenAIGatewayService) minimaxTaskAccount(ctx context.Context, id int64) (*Account, string, error) {
+	if s == nil || s.accountRepo == nil {
+		return nil, "", fmt.Errorf("video account repository unavailable")
+	}
+	account, err := s.accountRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	if account == nil || strings.TrimSpace(account.GetCredential("api_key")) == "" {
+		return nil, "", fmt.Errorf("video account credential unavailable")
+	}
+	base, err := s.validateUpstreamBaseURL(MinimaxVideoBaseURL(account))
+	return account, base, err
+}
+
+// PollMinimaxVideoTask resumes an existing provider task without submitting a
+// second generation. A dedicated DB connection serializes polls across workers.
+// Transient errors preserve pending state; only a valid terminal response is
+// published and charged. The caller receives authoritative state in task.
+func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *MinimaxVideoTask) error {
+	ctx, cancelPoll := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelPoll()
+	if task == nil {
+		return fmt.Errorf("video task unavailable")
+	}
+	db := videoTaskHandle()
+	if db == nil {
+		return fmt.Errorf("video database unavailable")
+	}
+	// Account loading can use the shared pool. Complete it before holding the
+	// session-lock connection, so polling works even with a one-connection pool.
+	account, base, err := s.minimaxTaskAccount(ctx, task.AccountID)
+	if err != nil {
+		// Missing/deleted accounts must not permanently monopolize the oldest
+		// recovery batch. No lock connection is held while rotating this attempt.
+		_, _ = db.ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=jsonb_set(task_snapshot,'{last_polled_at}',to_jsonb(now()::text)) WHERE task_id=$1 AND deleted_at IS NULL`, task.ID)
+		return err
+	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	lockKey := "minimax-video-poll:" + task.ID
+	var claimed bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock(hashtextextended($1, 0))", lockKey).Scan(&claimed); err != nil || !claimed {
+		_ = conn.Close()
+		return err
+	}
+	var releaseOnce sync.Once
+	releaseLock := func() {
+		releaseOnce.Do(func() {
+			unlockCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if _, err := conn.ExecContext(unlockCtx, "SELECT pg_advisory_unlock(hashtextextended($1, 0))", lockKey); err != nil {
+				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			}
+			_ = conn.Close()
+		})
+	}
+	defer releaseLock()
+	fresh, err := loadMinimaxVideoTaskWithQueryer(ctx, conn, task.ID, task.UserID, task.APIKeyID)
+	if err != nil {
+		return err
+	}
+	if fresh == nil {
+		task.Status = MinimaxVideoStatusError
+		return nil
+	}
+	*task = *fresh
+	if task.AccountID != account.ID {
+		return fmt.Errorf("video task account changed during poll")
+	}
+	wasDone := task.Status == MinimaxVideoStatusDone
+	if task.IsTerminal() && (!wasDone || !videoTaskNeedsProviderMetadata(*task)) {
+		return nil
+	}
+	if task.Provider == VideoProviderSeedance || task.UpstreamID == "" {
+		return nil
+	}
+	task.LastPolledAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if wasDone {
+		if _, err := conn.ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=jsonb_set(task_snapshot,'{last_polled_at}',to_jsonb(now()::text)) WHERE task_id=$1 AND status='done' AND settled_at IS NULL AND deleted_at IS NULL`, task.ID); err != nil {
+			return err
+		}
+	} else {
+		if err := saveMinimaxVideoTaskWithExecer(ctx, conn, *task); err != nil {
+			return err
+		}
+	}
+	target, err := BuildMinimaxVideoURL(base, MinimaxVideoEndpointStatus, task.UpstreamID)
+	if err != nil {
+		return err
+	}
+	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, err := s.callMinimaxVideo(pollCtx, account, http.MethodGet, target, nil)
+	if err != nil {
+		return err
+	}
+	if result.UpstreamID == "" {
+		result.UpstreamID = task.UpstreamID
+	}
+	if result.UpstreamID != task.UpstreamID {
+		return fmt.Errorf("minimax poll returned a different task ID")
+	}
+	if result.Status == MinimaxVideoStatusDone {
+		if err := s.validateMinimaxCompletedResult(result, base); err != nil {
+			return err
+		}
+	}
+	if result.Status == MinimaxVideoStatusError {
+		result.Error = "Video generation failed or was cancelled by the provider"
+	}
+	if wasDone {
+		if result.Status != MinimaxVideoStatusDone {
+			return fmt.Errorf("provider tried to regress a completed task")
+		}
+		if !task.UpstreamCostReported && result.UpstreamCostReported {
+			task.UpstreamCostUSD, task.UpstreamCostReported = result.UpstreamCostUSD, true
+		}
+		if !task.UsageReported && result.UsageReported {
+			task.InputTokens, task.OutputTokens, task.UsageReported = result.InputTokens, result.OutputTokens, true
+		}
+		payload, err := json.Marshal(task)
+		if err != nil {
+			return err
+		}
+		res, err := conn.ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=$2,upstream_cost_usd=$3 WHERE task_id=$1 AND status='done' AND settled_at IS NULL AND deleted_at IS NULL`, task.ID, string(payload), task.UpstreamCostUSD)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil || n == 0 {
+			return err
+		}
+		releaseLock()
+		_, err = s.settleMinimaxVideoTask(ctx, *task)
+		return err
+	}
+	mergeVideoProviderResult(task, result)
+	// The provider result survives a request deadline. Persist through the lock
+	// connection, then release it before the billing ledger acquires connections.
+	persistCtx, cancelPersist := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelPersist()
+	if err := saveMinimaxVideoTaskWithExecer(persistCtx, conn, *task); err != nil {
+		return err
+	}
+	releaseLock()
+	if task.Status == MinimaxVideoStatusDone {
+		_, err = s.settleMinimaxVideoTask(persistCtx, *task)
+	}
+	return err
+}
+
+func (s *OpenAIGatewayService) validateMinimaxCompletedResult(result MinimaxVideoTask, base string) error {
+	if strings.TrimSpace(result.VideoURL) == "" {
+		return fmt.Errorf("minimax success response has no video URL")
+	}
+	return s.ValidateVideoDownloadURL(result.VideoURL, base)
 }
 
 // MinimaxVideoAccountCredentials returns the upstream base URL and API key of

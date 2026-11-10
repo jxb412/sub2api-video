@@ -101,6 +101,7 @@ const (
 const (
 	upstreamProtocolModeDefault          = "default"
 	upstreamProtocolModeLongStreamH2     = "long_stream_h2"
+	upstreamProtocolModeVideoH2          = "video_h2"
 	upstreamProtocolModeOpenAIH1         = "openai_h1"
 	upstreamProtocolModeOpenAIH2         = "openai_h2"
 	upstreamProtocolModeOpenAIH1Fallback = "openai_h1_fallback"
@@ -981,6 +982,11 @@ func (s *httpUpstreamService) resolvePoolSettings(isolation string, accountConcu
 
 func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, profile service.HTTPUpstreamProfile) poolSettings {
 	switch profile {
+	case service.HTTPUpstreamProfileVideo:
+		// Blocking video creation can take the full worker deadline before any
+		// response headers arrive. Preserve account proxy/pool policy without
+		// inheriting the shorter timeout used for ordinary requests.
+		settings.responseHeaderTimeout = 20 * time.Minute
 	case service.HTTPUpstreamProfileOpenAI:
 		settings.responseHeaderTimeout = 0
 		if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
@@ -1072,6 +1078,9 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 }
 
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
+	if profile == service.HTTPUpstreamProfileVideo {
+		return upstreamProtocolModeVideoH2
+	}
 	if profile == service.HTTPUpstreamProfileLongStream {
 		return upstreamProtocolModeLongStreamH2
 	}
@@ -1400,7 +1409,7 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
 	}
 	switch protocolMode {
-	case upstreamProtocolModeLongStreamH2, upstreamProtocolModeOpenAIH2:
+	case upstreamProtocolModeLongStreamH2, upstreamProtocolModeOpenAIH2, upstreamProtocolModeVideoH2:
 		transport.ForceAttemptHTTP2 = true
 		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
 		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。

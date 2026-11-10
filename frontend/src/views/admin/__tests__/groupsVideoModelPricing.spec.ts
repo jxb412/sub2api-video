@@ -15,7 +15,10 @@ describe('Grok video model pricing form', () => {
     expect(videoModelPriceFamilyRows(form).map(({ key }) => key)).toEqual([
       'grok-imagine-video',
       'grok-imagine-video-1.5',
-      'minimax-h3'
+      'minimax-h3',
+      'seedance-1-0-pro-250528',
+      'seedance-1-0-lite-t2v-250428',
+      'seedance-1-0-lite-i2v-250428'
     ])
     expect(form['grok-imagine-video']['480p']).toBeNull()
     expect(form['grok-imagine-video-1.5']['1080p']).toBeNull()

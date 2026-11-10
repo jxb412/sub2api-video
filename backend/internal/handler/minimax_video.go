@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	pkgerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -23,6 +24,10 @@ import (
 // path, picks an account with the minimax_video capability, stores the task and
 // returns a gateway task id. The blocking upstream call runs in the background.
 func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
+	h.asyncVideoGeneration(c, "minimax")
+}
+
+func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider string) {
 	requestStart := time.Now()
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -38,7 +43,7 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 		zap.Int64("user_id", subject.UserID), zap.Int64("api_key_id", apiKey.ID))
 
 	if mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type")); err != nil || mediaType != "application/json" {
-		h.errorResponse(c, http.StatusUnsupportedMediaType, "invalid_request_error", "MiniMax video requires application/json")
+		h.errorResponse(c, http.StatusUnsupportedMediaType, "invalid_request_error", provider+" video requires application/json")
 		return
 	}
 	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
@@ -46,11 +51,18 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Request body is empty")
 		return
 	}
-	info, err := service.ParseMinimaxVideoRequest(body)
+	var info service.MinimaxVideoRequestInfo
+	if provider == service.VideoProviderSeedance {
+		info, err = service.ParseSeedanceVideoRequest(body)
+	} else {
+		info, err = service.ParseMinimaxVideoRequest(body)
+	}
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	setOpsRequestContext(c, info.Model, false)
+	setOpsEndpointContext(c, "", int16(service.RequestTypeSync))
 	if !service.GroupAllowsImageGeneration(apiKey.Group) {
 		h.errorResponse(c, http.StatusForbidden, "permission_error", service.ImageGenerationPermissionMessage())
 		return
@@ -104,6 +116,11 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	}
 	releases = append(releases, userRelease)
 	requestCtx := service.WithOpenAIProfitControlSuppressed(c.Request.Context())
+	channelMapping := h.gatewayService.VideoChannelMapping(requestCtx, apiKey, info.Model)
+	routingModel := channelMapping.MappedModel
+	if routingModel == "" {
+		routingModel = info.Model
+	}
 	platform := service.PlatformMiniMax
 	if apiKey.Group != nil {
 		platform = apiKey.Group.Platform
@@ -113,6 +130,11 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	}
 	// Existing MiniMax groups may contain OpenAI API-key relay accounts.
 	// Both pools require the explicit MiniMax capability and the same group binding.
+	requiredCapability := service.OpenAIEndpointCapabilityMinimaxVideo
+	if provider == service.VideoProviderSeedance {
+		platform = service.PlatformOpenAI
+		requiredCapability = service.OpenAIEndpointCapabilitySeedance
+	}
 	platforms := []string{platform}
 	if platform == service.PlatformMiniMax {
 		platforms = []string{service.PlatformOpenAI, service.PlatformMiniMax}
@@ -120,8 +142,8 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	var selection *service.AccountSelectionResult
 	for _, candidatePlatform := range platforms {
 		selection, _, err = h.gatewayService.SelectAccountWithSchedulerForCapability(
-			requestCtx, apiKey.GroupID, "", h.gatewayService.GenerateExplicitSessionHash(c, body), info.Model,
-			nil, service.OpenAIUpstreamTransportHTTPSSE, service.OpenAIEndpointCapabilityMinimaxVideo,
+			requestCtx, apiKey.GroupID, "", h.gatewayService.GenerateExplicitSessionHash(c, body), routingModel,
+			nil, service.OpenAIUpstreamTransportHTTPSSE, requiredCapability,
 			false, false, false, candidatePlatform,
 		)
 		if selection != nil && selection.Account != nil {
@@ -133,10 +155,18 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	}
 	if err != nil || selection == nil || selection.Account == nil {
 		reqLog.Info("minimax_video.no_eligible_account", zap.Error(err))
-		h.errorResponse(c, http.StatusServiceUnavailable, "minimax_video_no_eligible_account", "No eligible MiniMax video accounts in this group")
+		h.errorResponse(c, http.StatusServiceUnavailable, provider+"_video_no_eligible_account", "No eligible "+provider+" video accounts in this group")
 		return
 	}
 	account := selection.Account
+	bindContentModerationAccountScope(c, account)
+	if moderationBody := info.ModerationBody(); len(moderationBody) > 0 {
+		decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, info.Model, moderationBody)
+		if decision != nil && !decision.AllowNextStage {
+			h.openAISecurityAuditError(c, decision)
+			return
+		}
+	}
 	if !selection.Acquired {
 		if selection.WaitPlan == nil {
 			h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "No available video account slots")
@@ -149,21 +179,26 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 		}
 		releases = append(releases, accountRelease)
 	}
-	upstreamBody, err := service.BuildMinimaxVideoUpstreamBody(info, account.GetMappedModel(info.Model))
-	if err != nil {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid video request")
-		return
+	var upstreamBody []byte
+	var targetURL string
+	if provider == service.VideoProviderSeedance {
+		targetURL, upstreamBody, err = h.gatewayService.SeedanceVideoRequest(account, body, account.GetMappedModel(routingModel))
+	} else {
+		upstreamBody, err = service.BuildMinimaxVideoUpstreamBody(info, account.GetMappedModel(routingModel))
+		if err == nil {
+			targetURL, err = h.gatewayService.MinimaxVideoRequestURL(account)
+		}
 	}
-	targetURL, err := h.gatewayService.MinimaxVideoRequestURL(account)
 	if err != nil {
-		h.errorResponse(c, http.StatusServiceUnavailable, "api_error", "Video upstream URL is not configured correctly")
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid video request or upstream URL")
 		return
 	}
 	task := service.MinimaxVideoTask{
 		ID:              service.MinimaxVideoTaskID(),
+		Provider:        provider,
 		Status:          service.MinimaxVideoStatusQueued,
 		Model:           info.Model,
-		UpstreamModel:   account.GetMappedModel(info.Model),
+		UpstreamModel:   account.GetMappedModel(routingModel),
 		Prompt:          info.Prompt,
 		DurationSeconds: info.DurationSeconds,
 		Resolution:      info.Resolution,
@@ -177,20 +212,36 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	}
 
 	// 计费快照：把分组的价格与倍率固定在任务上。
-	task.BillingMode = service.VideoBillingModeDefault
-	task.RateMultiplier = h.gatewayService.ResolveMinimaxVideoRateMultiplier(requestCtx, apiKey)
-	if apiKey.Group != nil {
-		settings := service.VideoBillingSettingsFor(apiKey.Group)
-		task.BillingMode = settings.Mode
-		if price := apiKey.Group.GetVideoPriceForModel(info.Model, service.ResolveVideoBillingTier(info.Resolution, settings.Tiers)); price != nil {
-			task.PricePerSecond = *price
-			task.PriceConfigured = true
-		}
+	if provider == service.VideoProviderSeedance {
+		task.ID = service.SeedanceVideoTaskID()
+	}
+	task.BillingModel = info.Model
+	switch channelMapping.BillingModelSource {
+	case service.BillingModelSourceUpstream:
+		task.BillingModel = task.UpstreamModel
+	case service.BillingModelSourceChannelMapped:
+		task.BillingModel = routingModel
+	}
+
+	if err := h.gatewayService.PrepareVideoBilling(requestCtx, &task, apiKey); err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "video_pricing_not_configured", err.Error())
+		return
 	}
 	service.SnapshotMinimaxVideoBilling(&task, apiKey, account, subscription)
 	task.BillingSnapshot.Platform = service.QuotaPlatform(requestCtx, apiKey)
 	// Keep inflight reservation alive until settlement, even after the create response closes.
-	workerCtx, cancelWorker := context.WithTimeout(context.WithoutCancel(requestCtx), 22*time.Minute)
+	workerTimeout := 22 * time.Minute
+	if provider == service.VideoProviderSeedance {
+		var lifetimeErr error
+		workerTimeout, lifetimeErr = service.SeedanceVideoLifetime(body)
+		if lifetimeErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", lifetimeErr.Error())
+			return
+		}
+		task.ExpiresAt = time.Now().UTC().Add(workerTimeout).Format(time.RFC3339Nano)
+		workerTimeout += 5 * time.Minute
+	}
+	workerCtx, cancelWorker := context.WithTimeout(context.WithoutCancel(requestCtx), workerTimeout)
 	releases = append(releases, cancelWorker)
 	workerCtx, inflightDone, err := reserveMinimaxVideoCharge(workerCtx, h.billingCacheService, h.gatewayService, apiKey, subscription, task, service.InflightEstimateRequest{
 		Model: info.Model, Kind: service.InflightEstimateVideo, Units: 1,
@@ -202,9 +253,17 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 		return
 	}
 	releases = append(releases, inflightDone)
-	if err := h.gatewayService.StoreMinimaxVideoTask(requestCtx, task); err != nil {
+	if reservation := service.InflightReservationFromContext(workerCtx); reservation != nil {
+		task.AdmissionCost = reservation.Amount()
+	}
+	task.AdmissionCostKnown = task.BillingMode == service.VideoBillingModeLocalPrice && task.PriceConfigured
+	if err := h.gatewayService.AdmitVideoTask(requestCtx, &task, apiKey, account, subscription, subject.Concurrency); err != nil {
 		reqLog.Warn("minimax_video.task_store_failed", zap.Error(err))
-		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to create video task")
+		status, code, message := pkgerrors.Code(err), pkgerrors.Reason(err), pkgerrors.Message(err)
+		if status < 400 || status >= 500 {
+			status, code, message = http.StatusInternalServerError, "api_error", "Failed to create video task"
+		}
+		h.errorResponse(c, status, code, message)
 		return
 	}
 
@@ -218,19 +277,24 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 	started = true
 	go func() {
 		defer release()
-		h.gatewayService.RunMinimaxVideoTask(workerCtx, task.ID, task.UserID, task.APIKeyID, targetURL, token, upstreamBody)
+		if provider == service.VideoProviderSeedance {
+			h.gatewayService.RunSeedanceVideoTask(workerCtx, task, account, targetURL, upstreamBody)
+		} else {
+			h.gatewayService.RunMinimaxVideoTask(workerCtx, task.ID, task.UserID, task.APIKeyID, targetURL, token, upstreamBody)
+		}
 		if h.apiKeyService != nil {
 			h.apiKeyService.InvalidateAuthCacheByKey(context.Background(), apiKey.Key)
 		}
 	}()
 
-	c.JSON(http.StatusOK, gin.H{
-		"id":         task.ID,
-		"request_id": task.ID,
-		"status":     service.MinimaxVideoStatusQueued,
-		"model":      task.Model,
-		"created_at": task.CreatedAt,
-	})
+	if provider == service.VideoProviderSeedance {
+		c.JSON(http.StatusOK, gin.H{"id": task.ID})
+	} else {
+		c.JSON(http.StatusOK, gin.H{
+			"id": task.ID, "request_id": task.ID, "status": service.MinimaxVideoStatusQueued,
+			"model": task.Model, "created_at": task.CreatedAt,
+		})
+	}
 	reqLog.Info("minimax_video.task_queued",
 		zap.String("task_id", task.ID),
 		zap.Int64("account_id", account.ID),
@@ -240,6 +304,10 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 // Known video charges must fit all payer limits before starting billable work.
 // The reservation holds headroom only; the completion ledger performs the debit.
 func reserveMinimaxVideoCharge(ctx context.Context, billing *service.BillingCacheService, estimator inflightReservationEstimator, key *service.APIKey, subscription *service.UserSubscription, task service.MinimaxVideoTask, req service.InflightEstimateRequest) (context.Context, func(), error) {
+	if task.BillingMode == service.VideoBillingModeUsageTokens {
+		req.Kind = service.InflightEstimateToken
+		req.Model = task.BillingModel
+	}
 	if task.PriceConfigured && !service.VideoBillingModeUsesUpstreamCost(task.BillingMode) {
 		settlement := service.ComputeMinimaxVideoSettlement(task, task.BillingMode, nil, task.RateMultiplier)
 		reservation, err := billing.ReserveFixedCharge(ctx, key.User, key, key.Group, subscription, settlement.BilledCost)
@@ -269,7 +337,7 @@ func (h *OpenAIGatewayHandler) MinimaxVideoStatus(c *gin.Context) {
 		return
 	}
 	task, err := h.gatewayService.LoadMinimaxVideoTask(c.Request.Context(), taskID, subject.UserID, apiKey.ID)
-	if err != nil || task == nil {
+	if err != nil || task == nil || (task.Provider != "" && task.Provider != "minimax") || apiKey.GroupID == nil || task.GroupID != *apiKey.GroupID {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video request not found")
 		return
 	}
@@ -294,7 +362,7 @@ func (h *OpenAIGatewayHandler) MinimaxVideoContent(c *gin.Context) {
 	}
 	taskID := strings.TrimSpace(c.Param("request_id"))
 	task, err := h.gatewayService.LoadMinimaxVideoTask(c.Request.Context(), taskID, subject.UserID, apiKey.ID)
-	if err != nil || task == nil {
+	if err != nil || task == nil || (task.Provider != "" && task.Provider != "minimax") || apiKey.GroupID == nil || task.GroupID != *apiKey.GroupID {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video request not found")
 		return
 	}

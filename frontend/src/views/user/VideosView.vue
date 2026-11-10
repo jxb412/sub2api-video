@@ -4,6 +4,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { useAppStore } from '@/stores/app'
 import { videosAPI, type VideoTask, type VideoTaskStats } from '@/api/videos'
+import { videoProviderLabel, videoBillingModeLabel, videoBillingStatusLabel, videoChargeLabel, videoUsageLabel, videoUpstreamCostLabel, videoTaskCanDelete, videoMoneyLabel } from '../videoTaskPresentation'
 
 const appStore = useAppStore()
 const tasks = ref<VideoTask[]>([])
@@ -14,6 +15,7 @@ const page = ref(1)
 const pageSize = ref(20)
 const loading = ref(false)
 const statusFilter = ref('')
+const providerFilter = ref('')
 const modelFilter = ref('')
 const search = ref('')
 const activeTab = ref<'tasks' | 'billing'>('tasks')
@@ -32,9 +34,8 @@ const statusMeta: Record<string, { label: string; cls: string; dot: string }> = 
   error: { label: '失败', cls: 'bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300', dot: 'bg-rose-500' },
 }
 
-const modelOptions = computed(() => [...new Set(tasks.value.map((t) => t.model))].sort())
-const hasRunning = computed(() => tasks.value.some((t) => t.status === 'queued' || t.status === 'processing'))
-const billingTasks = computed(() => tasks.value.filter((t) => t.status === 'done' || t.status === 'error'))
+const modelOptions = computed(() => [...new Set([modelFilter.value, 'MiniMax-H3', 'seedance-1-0-pro-250528', 'seedance-1-0-lite-t2v-250428', 'seedance-1-0-lite-i2v-250428', ...tasks.value.map((t) => t.model)])].filter(Boolean).sort())
+const hasRunning = computed(() => tasks.value.some((t) => t.status === 'queued' || t.status === 'processing' || t.billing_status === 'pending') || (stats.value?.queued ?? 0) + (stats.value?.processing ?? 0) > 0)
 
 function fmtTime(v?: string | null) {
   if (!v) return '—'
@@ -42,9 +43,7 @@ function fmtTime(v?: string | null) {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
-function fmtMoney(v: number) {
-  return `$${(v ?? 0).toFixed(4)}`
-}
+const fmtMoney = videoMoneyLabel
 function shortId(id: string) {
   return id.length > 14 ? `${id.slice(0, 14)}…` : id
 }
@@ -61,10 +60,12 @@ async function load() {
         page: page.value,
         page_size: pageSize.value,
         status: statusFilter.value || undefined,
+        provider: providerFilter.value || undefined,
+        billing_only: activeTab.value === 'billing' || undefined,
         model: modelFilter.value || undefined,
         search: search.value || undefined,
       }),
-      videosAPI.stats(modelFilter.value ? { model: modelFilter.value } : {}),
+      videosAPI.stats({ model: modelFilter.value || undefined, provider: providerFilter.value || undefined }),
     ])
     if (sequence !== loadSequence) return
     tasks.value = list.items ?? []
@@ -114,6 +115,7 @@ async function download(task: VideoTask) {
 }
 
 async function remove(task: VideoTask) {
+  if (!videoTaskCanDelete(task)) return
   if (!window.confirm('删除后不可恢复，历史账单仍会保留。确认删除？')) return
   try {
     await videosAPI.remove(task.task_id)
@@ -126,7 +128,8 @@ async function openDetail(task: VideoTask) {
   try { selected.value = await videosAPI.get(task.task_id) } catch { appStore.showError('加载任务详情失败') }
 }
 
-watch([statusFilter, modelFilter], () => {
+watch([statusFilter, modelFilter, providerFilter, activeTab], () => {
+  if (activeTab.value === 'billing' && ['queued', 'processing'].includes(statusFilter.value)) statusFilter.value = ''
   page.value = 1
   load().finally(schedulePoll)
 })
@@ -203,7 +206,7 @@ curl -X POST "$BASE/v1/videos/generations" \\
 # 也支持 OpenAI 多模态写法：
 # {"content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"..."}}]}`,
     params: [
-      { name: 'image_url', type: 'string', required: '是', desc: '首帧图 URL，支持多张（数组）' },
+      { name: 'image_url', type: 'string / string[]', required: '是', desc: '首帧图 URL；多图能力以所用供应商为准' },
       { name: 'prompt', type: 'string', required: '否', desc: '动作描述；仅传图时按图续写' },
       { name: 'duration', type: 'int', required: '否', desc: '秒数，默认 5' },
     ],
@@ -213,24 +216,32 @@ curl -X POST "$BASE/v1/videos/generations" \\
     label: 'Seedance 文生',
     title: 'Seedance（国际版）· 文生视频（原生 Ark 协议）',
     endpoint: 'POST /api/v3/contents/generations/tasks',
-    code: `# Seedance 走火山 / BytePlus 原生任务协议，与 /v1/videos 完全不同
+    code: `# BASE 是网关根地址；使用绑定 Seedance 分组的 API Key
 curl -X POST "$BASE/api/v3/contents/generations/tasks" \\
   -H "Authorization: Bearer $API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "seedance-1-0-pro-250528",
     "content": [
-      { "type": "text", "text": "a cat running on grass --resolution 720p --duration 5" }
-    ]
+      { "type": "text", "text": "a cat running on grass" }
+    ],
+    "resolution": "720p",
+    "duration": 5
   }'
 
-# → {"id":"cgt-2026..."}  查询：
-curl "$BASE/api/v3/contents/generations/tasks/cgt-2026..." \\
-  -H "Authorization: Bearer $API_KEY"`,
+# → {"id":"sdv_..."}，请保存实际返回的 id
+curl "$BASE/api/v3/contents/generations/tasks/sdv_..." \\
+  -H "Authorization: Bearer $API_KEY"
+
+# status=succeeded 后下载，仍需同一个 API Key
+curl "$BASE/api/v3/contents/generations/tasks/sdv_.../content" \\
+  -H "Authorization: Bearer $API_KEY" -o video.mp4`,
     params: [
       { name: 'model', type: 'string', required: '是', desc: 'seedance-1-0-pro / -lite-t2v' },
       { name: 'content[].type', type: 'string', required: '是', desc: 'text 或 image_url' },
-      { name: 'content[].text', type: 'string', required: '是', desc: '提示词，可用 --resolution/--duration 追加参数' },
+      { name: 'content[].text', type: 'string', required: '是', desc: 'text 类型的提示词' },
+      { name: 'resolution', type: 'string', required: '否', desc: '实际可用分辨率由模型及供应商决定，例如 720p' },
+      { name: 'duration', type: 'int', required: '否', desc: '视频秒数，以所选模型支持范围为准' },
     ],
   },
   {
@@ -245,9 +256,11 @@ curl -X POST "$BASE/api/v3/contents/generations/tasks" \\
   -d '{
     "model": "seedance-1-0-lite-i2v-250428",
     "content": [
-      { "type": "image_url", "image_url": { "url": "https://example.com/frame.png" } },
-      { "type": "text", "text": "the cat starts running --resolution 720p" }
-    ]
+      { "type": "image_url", "image_url": { "url": "https://example.com/frame.png" }, "role": "first_frame" },
+      { "type": "text", "text": "the cat starts running" }
+    ],
+    "resolution": "720p",
+    "duration": 5
   }'`,
     params: [
       { name: 'model', type: 'string', required: '是', desc: 'seedance-1-0-lite-i2v-250428' },
@@ -258,6 +271,7 @@ curl -X POST "$BASE/api/v3/contents/generations/tasks" \\
 ]
 
 const currentSample = computed(() => apiSamples.find((s) => s.key === activeSample.value) ?? apiSamples[0])
+const isSeedanceSample = computed(() => currentSample.value.key.startsWith('seedance_'))
 
 </script>
 
@@ -269,8 +283,9 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
         <div>
           <h1 class="text-xl font-semibold text-slate-900 dark:text-slate-100">视频任务</h1>
           <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            MiniMax H3 的生成任务与计费记录；Seedance 通过下方原生 API 查询，扣费见用量记录
+            MiniMax H3 与 Seedance 的生成任务、实际用量和结算记录
           </p>
+          <a href="https://www.yunqiao.me/guide#video-start" target="_blank" rel="noopener noreferrer" class="mt-1 inline-block text-xs text-indigo-600 hover:underline">查看完整调用文档、计费说明与错误排查</a>
         </div>
         <button
           class="rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -324,13 +339,18 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
 
       <!-- 筛选 -->
       <div class="flex flex-wrap items-center gap-2">
+        <select v-model="providerFilter" aria-label="视频供应商" data-testid="video-provider-filter" class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900">
+          <option value="">全部供应商</option>
+          <option value="minimax">MiniMax H3</option>
+          <option value="seedance">Seedance / BytePlus</option>
+        </select>
         <select
           v-model="statusFilter"
           class="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-900"
         >
           <option value="">全部状态</option>
-          <option value="queued">排队中</option>
-          <option value="processing">生成中</option>
+          <option v-if="activeTab === 'tasks'" value="queued">排队中</option>
+          <option v-if="activeTab === 'tasks'" value="processing">生成中</option>
           <option value="done">已完成</option>
           <option value="error">失败</option>
         </select>
@@ -378,6 +398,7 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
                 <span class="rounded-md bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
                   {{ t.model }}
                 </span>
+                <div class="mt-1 text-[11px] text-slate-500">{{ videoProviderLabel(t.provider) }}</div>
               </td>
               <td class="hidden max-w-[240px] truncate px-4 py-3 text-slate-600 xl:table-cell dark:text-slate-400" :title="t.prompt">
                 {{ t.prompt }}
@@ -389,12 +410,11 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
                 </span>
               </td>
               <td class="px-4 py-3 text-slate-600 dark:text-slate-400">
-                {{ t.resolution || '—' }} · {{ t.duration_seconds || '—' }}s
+                <span class="text-xs">{{ videoUsageLabel(t) }}</span>
               </td>
               <td class="px-4 py-3 text-right font-mono">
-                <span v-if="t.status === 'done'">{{ fmtMoney(t.billed_cost_usd) }}</span>
-                <span v-else-if="t.status === 'error'" class="text-xs text-slate-400">未扣费</span>
-                <span v-else class="text-slate-300">—</span>
+                <span>{{ videoChargeLabel(t) }}</span>
+                <div v-if="t.status === 'done'" class="mt-1 text-[11px] text-slate-500">{{ videoBillingStatusLabel(t) }}</div>
               </td>
               <td class="px-4 py-3 text-slate-500 dark:text-slate-400">{{ fmtTime(t.created_at) }}</td>
               <td class="px-4 py-3 text-right">
@@ -407,7 +427,8 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
                 </button>
                 <button
                   class="rounded-md px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 disabled:text-slate-300 dark:hover:bg-rose-900/30"
-                  :disabled="t.status === 'queued' || t.status === 'processing'"
+                  :disabled="!videoTaskCanDelete(t)"
+                  :title="t.billing_status === 'pending' ? '待结算任务不能删除' : undefined"
                   @click="remove(t)"
                 >
                   删除
@@ -417,7 +438,7 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
             <tr v-if="!tasks.length && !loading">
               <td colspan="8" class="px-4 py-16 text-center">
                 <div class="text-sm text-slate-500 dark:text-slate-400">还没有视频任务</div>
-                <div class="mt-1 text-xs text-slate-400">用 MiniMax-H3 生成你的第一段视频</div>
+                <div class="mt-1 text-xs text-slate-400">使用 MiniMax H3 或 Seedance 生成视频，任务与账单将自动显示在这里</div>
               </td>
             </tr>
           </tbody>
@@ -436,29 +457,33 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
               <th class="px-4 py-3 text-left">时间</th>
               <th class="px-4 py-3 text-left">任务</th>
               <th class="px-4 py-3 text-left">模型</th>
-              <th class="px-4 py-3 text-left">时长</th>
+              <th class="px-4 py-3 text-left">计费用量</th>
               <th class="px-4 py-3 text-right">上游成本</th>
               <th class="px-4 py-3 text-right">实扣</th>
               <th class="px-4 py-3 text-left">模式</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
-            <tr v-for="t in billingTasks" :key="t.task_id">
+            <tr v-for="t in tasks" :key="t.task_id">
               <td class="px-4 py-3 text-slate-500 dark:text-slate-400">{{ fmtTime(t.completed_at || t.created_at) }}</td>
               <td class="px-4 py-3 font-mono text-xs">{{ shortId(t.task_id) }}</td>
               <td class="px-4 py-3">{{ t.model }}</td>
-              <td class="px-4 py-3">{{ t.duration_seconds }}s</td>
-              <td class="px-4 py-3 text-right font-mono">{{ fmtMoney(t.upstream_cost_usd) }}</td>
-              <td class="px-4 py-3 text-right font-mono">{{ fmtMoney(t.billed_cost_usd) }}</td>
+              <td class="px-4 py-3 text-xs">{{ videoUsageLabel(t) }}</td>
+              <td class="px-4 py-3 text-right font-mono">{{ videoUpstreamCostLabel(t) }}</td>
+              <td class="px-4 py-3 text-right font-mono">{{ videoChargeLabel(t) }}<div class="mt-1 text-[11px] text-slate-500">{{ videoBillingStatusLabel(t) }}</div></td>
               <td class="px-4 py-3 text-xs text-slate-500">
-                {{ t.billing_mode === 'upstream_cost' ? '跟随上游' : '按单价' }}
+                {{ videoBillingModeLabel(t.billing_mode) }}
               </td>
             </tr>
-            <tr v-if="!billingTasks.length">
+            <tr v-if="!tasks.length">
               <td colspan="7" class="px-4 py-16 text-center text-sm text-slate-500 dark:text-slate-400">暂无扣费记录</td>
             </tr>
           </tbody>
         </table>
+        <div class="flex items-center justify-between border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+          <span class="text-xs text-slate-500">共 {{ total }} 条结算记录</span>
+          <Pagination v-model:page="page" v-model:page-size="pageSize" :total="total" />
+        </div>
       </div>
 
       <!-- API 示例 -->
@@ -524,12 +549,19 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
           <div class="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 dark:text-slate-400">
             <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
               <div class="font-medium text-slate-700 dark:text-slate-200">响应字段</div>
-              <ul class="mt-1 space-y-1">
+              <ul v-if="isSeedanceSample" class="mt-1 space-y-1">
+                <li><code>id</code> 网关任务 ID（sdv_），用于查询与下载</li>
+                <li><code>status</code> queued / running / succeeded / failed</li>
+                <li><code>content.video_url</code> 成功后的受保护下载地址</li>
+                <li><code>usage.completion_tokens</code> 上游实际输出 Token</li>
+              </ul>
+              <ul v-else class="mt-1 space-y-1">
                 <li><code>id</code> 任务 ID，用于轮询与下载</li>
                 <li><code>status</code> queued / processing / done / error</li>
                 <li><code>output_resolution</code> 实际分辨率</li>
                 <li><code>usage.upstream_cost_usd</code> 上游真实成本</li>
               </ul>
+              <p class="mt-2">任务完成后自动结算；重复查询不会重复扣费。具体价格与计费模式以所属分组为准。</p>
             </div>
             <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
               <div class="font-medium text-slate-700 dark:text-slate-200">错误码</div>
@@ -572,6 +604,8 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
             <span class="text-slate-500 dark:text-slate-400">模型</span>
             <span>{{ selected.model }}</span>
           </div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">供应商</span><span>{{ videoProviderLabel(selected.provider) }}</span></div>
+          <div class="flex justify-between gap-4"><span class="text-slate-500">API Key / 分组</span><span>{{ selected.api_key_name || selected.api_key_id }} / {{ selected.group_name || selected.group_id }}</span></div>
           <div class="flex justify-between gap-4">
             <span class="text-slate-500 dark:text-slate-400">分辨率 / 时长</span>
             <span>{{ selected.resolution || '—' }} / {{ selected.duration_seconds }}s</span>
@@ -588,9 +622,12 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
         <div class="mt-5 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
           <div class="mb-2 text-xs font-medium text-slate-600 dark:text-slate-300">计费明细</div>
           <div class="space-y-1 text-sm">
-            <div class="flex justify-between"><span class="text-slate-500">上游成本</span><span class="font-mono">{{ fmtMoney(selected.upstream_cost_usd) }}</span></div>
-            <div class="flex justify-between"><span class="text-slate-500">计费模式</span><span>{{ selected.billing_mode === 'upstream_cost' ? '跟随上游成本' : '按秒单价' }}</span></div>
-            <div class="flex justify-between font-medium"><span>实扣</span><span class="font-mono">{{ fmtMoney(selected.billed_cost_usd) }}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">上游成本</span><span class="font-mono">{{ videoUpstreamCostLabel(selected) }}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">计费模式</span><span>{{ videoBillingModeLabel(selected.billing_mode) }}</span></div>
+            <div v-if="selected.billing_mode === 'usage_tokens'" class="flex justify-between gap-3"><span class="text-slate-500">实际用量</span><span class="text-right text-xs">{{ videoUsageLabel(selected) }}</span></div>
+            <div class="flex justify-between"><span class="text-slate-500">结算状态</span><span>{{ videoBillingStatusLabel(selected) }}</span></div>
+            <div v-if="selected.settled_at" class="flex justify-between"><span class="text-slate-500">结算时间</span><span>{{ fmtTime(selected.settled_at) }}</span></div>
+            <div class="flex justify-between font-medium"><span>实扣</span><span class="font-mono">{{ videoChargeLabel(selected) }}</span></div>
           </div>
         </div>
 
@@ -604,7 +641,8 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
           </button>
           <button
             class="rounded-lg border border-rose-200 px-3 py-2 text-sm text-rose-600 hover:bg-rose-50 dark:border-rose-800"
-            :disabled="selected.status === 'queued' || selected.status === 'processing'"
+            :disabled="!videoTaskCanDelete(selected)"
+            :title="selected.billing_status === 'pending' ? '待结算任务不能删除' : undefined"
             @click="remove(selected)"
           >
             删除

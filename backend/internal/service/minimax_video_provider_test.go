@@ -65,7 +65,7 @@ func TestMinimaxVideoCapabilityIsolation(t *testing.T) {
 
 func TestMinimaxVideoResponseStatesAndCosts(t *testing.T) {
 	for input, want := range map[string]string{"completed": "done", "succeeded": "done", "failed": "error", "running": "processing"} {
-		task, err := ParseMinimaxVideoUpstreamResponse([]byte(`{"status":"` + input + `","getoken":{"cost_usd":"0.375"}}`))
+		task, err := ParseMinimaxVideoUpstreamResponse([]byte(`{"status":"` + input + `","video":{"url":"https://video.example/result.mp4"},"getoken":{"cost_usd":"0.375"}}`))
 		require.NoError(t, err)
 		require.Equal(t, want, task.Status)
 		require.Equal(t, 0.375, task.UpstreamCostUSD)

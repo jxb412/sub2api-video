@@ -67,6 +67,16 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <div class="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3 dark:border-indigo-900 dark:bg-indigo-950/20">
+        <p class="text-sm font-medium">{{ t('admin.groups.videoPricing.accountPresetTitle') }}</p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <button type="button" class="btn btn-secondary text-sm" data-testid="video-account-preset-seedance" @click="applyVideoAccountPreset('seedance')">Seedance / BytePlus</button>
+          <button type="button" class="btn btn-secondary text-sm" data-testid="video-account-preset-minimax" @click="applyVideoAccountPreset('minimax_video')">MiniMax H3</button>
+        </div>
+        <p class="mt-2 text-xs text-gray-600 dark:text-gray-400">{{ t('admin.groups.videoPricing.accountPresetHint') }}</p>
+        <a href="https://www.yunqiao.me/guide#video-admin" target="_blank" rel="noopener noreferrer" class="mt-1 inline-block text-xs text-indigo-600 hover:underline">{{ t('admin.groups.videoPricing.setupGuide') }}</a>
+      </div>
+
       <!-- Platform Selection - Segmented Control Style -->
       <div>
         <label class="input-label">{{ t('admin.accounts.platform') }}</label>
@@ -3794,6 +3804,7 @@
           :groups="groups"
           :platform="form.platform"
           :mixed-scheduling="mixedScheduling"
+          :minimax-video-capable="accountCategory === 'apikey' && openAIEndpointCapabilities.includes('minimax_video')"
           data-tour="account-form-groups"
         />
       </div>
@@ -4152,7 +4163,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch } from 'vue'
+import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 
@@ -4860,17 +4872,13 @@ const openAITextEndpointCapabilityLabel = computed(() => {
 const openAIEndpointCapabilityOptions = computed<{ value: OpenAIEndpointCapability; label: string }[]>(() => [
   { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
   { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') },
-  { value: 'seedance', label: 'Seedance (Ark)' }
+  { value: 'seedance', label: 'Seedance / BytePlus' },
+  { value: 'minimax_video', label: 'MiniMax H3' }
 ])
 const openAITextGenerationCapabilityEnabled = computed(() =>
   openAIEndpointCapabilities.value.includes('chat_completions')
 )
 
-const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
-  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'seedance']
-  const selected = allowed.filter((value) => values.includes(value))
-  return selected.length > 0 ? selected : ['chat_completions', 'embeddings'] as OpenAIEndpointCapability[]
-}
 
 const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, event?: Event) => {
   if (openAIEndpointCapabilities.value.includes(capability)) {
@@ -4895,11 +4903,33 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
-  if (capabilities.length === 2 && !capabilities.includes('seedance')) {
+  if (isDefaultOpenAIEndpointCapabilities(capabilities)) {
     delete credentials.openai_capabilities
     return
   }
   credentials.openai_capabilities = capabilities
+}
+
+async function applyVideoAccountPreset(provider: 'seedance' | 'minimax_video') {
+  form.platform = 'openai'
+  accountCategory.value = 'apikey'
+  modelRestrictionMode.value = 'whitelist'
+  // Platform watchers reset endpoint and model fields; apply the preset after them.
+  await nextTick()
+  openAIEndpointCapabilities.value = [provider]
+  openAIResponsesMode.value = 'auto'
+  openaiPassthroughEnabled.value = false
+  apiKeyValue.value = ''
+  form.group_ids = []
+  if (provider === 'seedance') {
+    apiKeyBaseUrl.value = 'https://ark.ap-southeast.bytepluses.com/api/v3'
+    allowedModels.value = ['seedance-1-0-pro-250528', 'seedance-1-0-lite-t2v-250428', 'seedance-1-0-lite-i2v-250428']
+    if (!form.name.trim() || form.name === 'MiniMax H3') form.name = 'Seedance / BytePlus'
+  } else {
+    apiKeyBaseUrl.value = ''
+    allowedModels.value = ['MiniMax-H3']
+    if (!form.name.trim() || form.name === 'Seedance / BytePlus') form.name = 'MiniMax H3'
+  }
 }
 
 function buildAntigravityExtra(): Record<string, unknown> | undefined {
@@ -5998,6 +6028,10 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (form.platform === 'openai' && accountCategory.value === 'apikey' && !hasValidVideoProviderURL(openAIEndpointCapabilities.value, apiKeyBaseUrl.value)) {
+    appStore.showError(t('admin.groups.videoPricing.providerURLRequired'))
+    return
+  }
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {

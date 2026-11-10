@@ -3362,6 +3362,7 @@
         :groups="selectableGroups"
         :platform="account?.platform"
         :mixed-scheduling="mixedScheduling"
+        :minimax-video-capable="account?.type === 'apikey' && openAIEndpointCapabilities.includes('minimax_video')"
         data-tour="account-form-groups"
       />
 
@@ -3419,6 +3420,7 @@
 </template>
 
 <script setup lang="ts">
+import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, readOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4365,37 +4367,14 @@ const openAITextEndpointCapabilityLabel = computed(() => {
 const openAIEndpointCapabilityOptions = computed<{ value: OpenAIEndpointCapability; label: string }[]>(() => [
   { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
   { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') },
-  { value: 'seedance', label: 'Seedance (Ark)' }
+  { value: 'seedance', label: 'Seedance / BytePlus' },
+  { value: 'minimax_video', label: 'MiniMax H3' }
 ])
 const openAITextGenerationCapabilityEnabled = computed(() =>
   openAIEndpointCapabilities.value.includes('chat_completions')
 )
 
-const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
-  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'seedance']
-  const selected = allowed.filter((value) => values.includes(value))
-  return selected.length > 0 ? selected : ['chat_completions', 'embeddings'] as OpenAIEndpointCapability[]
-}
 
-const readOpenAIEndpointCapabilities = (credentials?: Record<string, unknown>): OpenAIEndpointCapability[] => {
-  const raw = credentials?.openai_capabilities
-  if (Array.isArray(raw)) {
-    return normalizeOpenAIEndpointCapabilities(
-      raw.filter((value): value is OpenAIEndpointCapability =>
-        value === 'chat_completions' || value === 'embeddings' || value === 'seedance'
-      )
-    )
-  }
-  if (raw !== null && typeof raw === 'object') {
-    const capabilityMap = raw as Record<string, unknown>
-    return normalizeOpenAIEndpointCapabilities(
-      openAIEndpointCapabilityOptions.value
-        .map((option) => option.value)
-        .filter((value) => capabilityMap[value] === true)
-    )
-  }
-  return ['chat_completions', 'embeddings']
-}
 
 const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, event?: Event) => {
   if (openAIEndpointCapabilities.value.includes(capability)) {
@@ -4420,7 +4399,7 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
-  if (capabilities.length === 2 && !capabilities.includes('seedance')) {
+  if (isDefaultOpenAIEndpointCapabilities(capabilities)) {
     delete credentials.openai_capabilities
     return
   }
@@ -5678,6 +5657,10 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 
 const handleSubmit = async () => {
   if (!props.account) return
+  if (props.account.platform === 'openai' && props.account.type === 'apikey' && !hasValidVideoProviderURL(openAIEndpointCapabilities.value, editBaseUrl.value)) {
+    appStore.showError(t('admin.groups.videoPricing.providerURLRequired'))
+    return
+  }
   const accountID = props.account.id
 
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {

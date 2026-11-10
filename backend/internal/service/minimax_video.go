@@ -74,30 +74,47 @@ func (e GrokMediaEndpoint) IsMinimaxVideo() bool {
 // Its billing snapshot and state are stored in PostgreSQL before submission;
 // completed jobs and pending settlements remain available across restarts.
 type MinimaxVideoTask struct {
-	ID              string  `json:"id"`
-	UpstreamID      string  `json:"upstream_id,omitempty"`
-	Status          string  `json:"status"`
-	Model           string  `json:"model"`
-	UpstreamModel   string  `json:"upstream_model,omitempty"`
-	Prompt          string  `json:"prompt,omitempty"`
-	DurationSeconds int     `json:"duration_seconds,omitempty"`
-	Resolution      string  `json:"resolution,omitempty"`
-	UpstreamCostUSD float64 `json:"upstream_cost_usd,omitempty"`
+	ID                     string             `json:"id"`
+	Provider               string             `json:"provider,omitempty"`
+	UpstreamID             string             `json:"upstream_id,omitempty"`
+	Status                 string             `json:"status"`
+	Model                  string             `json:"model"`
+	BillingModel           string             `json:"billing_model,omitempty"`
+	UpstreamModel          string             `json:"upstream_model,omitempty"`
+	Prompt                 string             `json:"prompt,omitempty"`
+	DurationSeconds        int                `json:"duration_seconds,omitempty"`
+	Resolution             string             `json:"resolution,omitempty"`
+	UpstreamCostUSD        float64            `json:"upstream_cost_usd,omitempty"`
+	UpstreamCostReported   bool               `json:"upstream_cost_reported,omitempty"`
+	InputTokens            int                `json:"input_tokens,omitempty"`
+	OutputTokens           int                `json:"output_tokens,omitempty"`
+	UsageReported          bool               `json:"usage_reported,omitempty"`
+	InputPricePerToken     float64            `json:"input_price_per_token,omitempty"`
+	OutputPricePerToken    float64            `json:"output_price_per_token,omitempty"`
+	TokenPricingConfigured bool               `json:"token_pricing_configured,omitempty"`
+	ProviderResponse       json.RawMessage    `json:"provider_response,omitempty"`
+	ResolutionPrices       map[string]float64 `json:"resolution_prices,omitempty"`
+	ResolutionTiers        map[string]string  `json:"resolution_tiers,omitempty"`
 	// 计费快照：提交时固定，避免任务完成后分组改价导致对不上账。
-	BillingMode     string                       `json:"billing_mode,omitempty"`
-	PricePerSecond  float64                      `json:"price_per_second,omitempty"`
-	PriceConfigured bool                         `json:"price_configured,omitempty"`
-	BillingSnapshot *MinimaxVideoBillingSnapshot `json:"billing_snapshot,omitempty"`
-	RateMultiplier  float64                      `json:"rate_multiplier,omitempty"`
-	BilledCostUSD   float64                      `json:"billed_cost_usd,omitempty"`
-	VideoURL        string                       `json:"video_url,omitempty"`
-	Error           string                       `json:"error,omitempty"`
-	UserID          int64                        `json:"user_id,omitempty"`
-	APIKeyID        int64                        `json:"api_key_id,omitempty"`
-	GroupID         int64                        `json:"group_id,omitempty"`
-	AccountID       int64                        `json:"account_id,omitempty"`
-	CreatedAt       string                       `json:"created_at,omitempty"`
-	CompletedAt     string                       `json:"completed_at,omitempty"`
+	BillingMode        string                       `json:"billing_mode,omitempty"`
+	PricePerSecond     float64                      `json:"price_per_second,omitempty"`
+	PriceConfigured    bool                         `json:"price_configured,omitempty"`
+	BillingSnapshot    *MinimaxVideoBillingSnapshot `json:"billing_snapshot,omitempty"`
+	AdmissionCost      float64                      `json:"admission_cost,omitempty"`
+	AdmissionCostKnown bool                         `json:"admission_cost_known,omitempty"`
+	RateMultiplier     float64                      `json:"rate_multiplier,omitempty"`
+	BilledCostUSD      float64                      `json:"billed_cost_usd,omitempty"`
+	VideoURL           string                       `json:"video_url,omitempty"`
+	Error              string                       `json:"error,omitempty"`
+	UserID             int64                        `json:"user_id,omitempty"`
+	APIKeyID           int64                        `json:"api_key_id,omitempty"`
+	GroupID            int64                        `json:"group_id,omitempty"`
+	AccountID          int64                        `json:"account_id,omitempty"`
+	CreatedAt          string                       `json:"created_at,omitempty"`
+	CompletedAt        string                       `json:"completed_at,omitempty"`
+	ExpiresAt          string                       `json:"expires_at,omitempty"`
+	LastPolledAt       string                       `json:"last_polled_at,omitempty"`
+	CreateStarted      bool                         `json:"create_started,omitempty"`
 }
 
 // IsTerminal reports whether the task can no longer change state.
@@ -123,6 +140,18 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return info, fmt.Errorf("request body must be a JSON object")
 	}
+	allowed := map[string]bool{"model": true, "prompt": true, "duration": true, "seconds": true, "duration_seconds": true, "resolution": true, "size": true, "output_resolution": true, "content": true, "image_url": true}
+	var unknown string
+	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+		if !allowed[key.String()] {
+			unknown = key.String()
+			return false
+		}
+		return true
+	})
+	if unknown != "" {
+		return info, fmt.Errorf("unsupported MiniMax video parameter %q", unknown)
+	}
 	modelValue := gjson.GetBytes(body, "model")
 	model := strings.TrimSpace(modelValue.String())
 	if modelValue.Type != gjson.String || model == "" {
@@ -131,6 +160,7 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 	info.Model = model
 	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
 	info.DurationSeconds = 5
+	durationSet := false
 	for _, field := range []string{"duration", "seconds", "duration_seconds"} {
 		if value := gjson.GetBytes(body, field); value.Exists() {
 			duration, err := strconv.Atoi(value.String())
@@ -138,7 +168,10 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 				return info, fmt.Errorf("%s must be an integer between 1 and 120", field)
 			}
 			info.DurationSeconds = duration
-			break
+			if durationSet {
+				return info, fmt.Errorf("use only one duration field")
+			}
+			durationSet = true
 		}
 	}
 	info.Resolution = strings.TrimSpace(firstNonEmptyString(
@@ -146,6 +179,19 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 		gjson.GetBytes(body, "size").String(),
 		gjson.GetBytes(body, "output_resolution").String(),
 	))
+	resolutionCount := 0
+	for _, field := range []string{"resolution", "size", "output_resolution"} {
+		value := gjson.GetBytes(body, field)
+		if value.Exists() {
+			resolutionCount++
+			if value.Type != gjson.String {
+				return info, fmt.Errorf("resolution must be a string")
+			}
+		}
+	}
+	if resolutionCount > 1 {
+		return info, fmt.Errorf("use only one resolution field")
+	}
 
 	// Multimodal form: {"content":[{"type":"text","text":"..."},{"type":"image_url",...}]}
 	if content := gjson.GetBytes(body, "content"); content.IsArray() {
@@ -210,6 +256,13 @@ func (i MinimaxVideoRequestInfo) ModerationBody() []byte {
 		payload["image_url"] = i.InputImageURLs[0]
 	} else if len(i.InputImageURLs) > 1 {
 		payload["image_url"] = i.InputImageURLs
+	}
+	if len(i.InputImageURLs) > 0 {
+		images := make([]map[string]any, 0, len(i.InputImageURLs))
+		for _, url := range i.InputImageURLs {
+			images = append(images, map[string]any{"type": "image_url", "image_url": map[string]string{"url": url}})
+		}
+		payload["images"] = images
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -301,7 +354,7 @@ func BuildMinimaxVideoUpstreamBody(info MinimaxVideoRequestInfo, upstreamModel s
 // shape, so one parser covers both.
 func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 	var task MinimaxVideoTask
-	if !gjson.ValidBytes(body) {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return task, fmt.Errorf("upstream returned invalid JSON")
 	}
 	root := gjson.ParseBytes(body)
@@ -323,6 +376,7 @@ func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 	}
 	if cost := root.Get("getoken.cost_usd"); cost.Exists() {
 		task.UpstreamCostUSD = parseFlexibleFloat(cost)
+		task.UpstreamCostReported = validVideoCost(cost)
 	}
 	if errField := root.Get("error"); errField.Exists() && errField.Type != gjson.Null {
 		if msg := strings.TrimSpace(errField.Get("message").String()); msg != "" {
@@ -351,6 +405,12 @@ func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 		} else {
 			task.Status = MinimaxVideoStatusProcessing
 		}
+	}
+	if task.Status != MinimaxVideoStatusDone && task.Status != MinimaxVideoStatusError && task.Status != MinimaxVideoStatusQueued && task.Status != MinimaxVideoStatusProcessing {
+		return task, fmt.Errorf("unknown MiniMax video status")
+	}
+	if task.Status == MinimaxVideoStatusDone && task.VideoURL == "" {
+		return task, fmt.Errorf("completed MiniMax response is missing video URL")
 	}
 	return task, nil
 }

@@ -7,7 +7,10 @@ export const grokVideoPriceResolutions = [
 export const grokVideoPriceFamilies = [
   { key: 'grok-imagine-video', label: 'grok-imagine-video' },
   { key: 'grok-imagine-video-1.5', label: 'grok-imagine-video-1.5' },
-  { key: 'minimax-h3', label: 'MiniMax-H3' }
+  { key: 'minimax-h3', label: 'MiniMax-H3' },
+  { key: 'seedance-1-0-pro-250528', label: 'Seedance 1.0 Pro' },
+  { key: 'seedance-1-0-lite-t2v-250428', label: 'Seedance 1.0 Lite T2V' },
+  { key: 'seedance-1-0-lite-i2v-250428', label: 'Seedance 1.0 Lite I2V' }
 ] as const
 
 export type VideoModelPrices = Record<string, Record<string, number>>

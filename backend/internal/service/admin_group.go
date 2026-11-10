@@ -1566,7 +1566,7 @@ func (s *adminServiceImpl) ReplaceUserGroup(ctx context.Context, userID, oldGrou
 func normalizeGroupVideoBilling(mode string, tiers map[string]string) (string, map[string]string, error) {
 	normalized, ok := NormalizeVideoBillingMode(mode)
 	if !ok {
-		return "", nil, infraerrors.BadRequest("INVALID_VIDEO_BILLING_MODE", "video_billing_mode must be local_price or upstream_cost")
+		return "", nil, infraerrors.BadRequest("INVALID_VIDEO_BILLING_MODE", "video_billing_mode must be local_price, upstream_cost or usage_tokens")
 	}
 	resolved, err := NormalizeVideoResolutionTiers(tiers)
 	if err != nil {

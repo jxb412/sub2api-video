@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -164,4 +166,125 @@ func TestMinimaxSimpleModeNeverChargesBalances(t *testing.T) {
 	require.Equal(t, 0.5, cmd.APIKeyRateLimitCost)
 	require.Zero(t, cmd.BalanceCost)
 	require.Zero(t, cmd.SubscriptionCost)
+}
+
+type videoWindowSubscriptionRepo struct {
+	UserSubscriptionRepository
+	sub        UserSubscription
+	resetErr   error
+	resetCalls int
+}
+
+func (r *videoWindowSubscriptionRepo) GetByID(context.Context, int64) (*UserSubscription, error) {
+	copy := r.sub
+	return &copy, nil
+}
+
+func (r *videoWindowSubscriptionRepo) ResetDailyUsage(_ context.Context, _ int64, expected *time.Time, next time.Time) error {
+	if r.resetErr != nil {
+		return r.resetErr
+	}
+	if expected != nil && r.sub.DailyWindowStart.Equal(*expected) {
+		r.sub.DailyWindowStart, r.sub.DailyUsageUSD = &next, 0
+		r.resetCalls++
+	}
+	return nil
+}
+func (r *videoWindowSubscriptionRepo) ResetWeeklyUsage(_ context.Context, _ int64, expected *time.Time, next time.Time) error {
+	if r.resetErr != nil {
+		return r.resetErr
+	}
+	if expected != nil && r.sub.WeeklyWindowStart.Equal(*expected) {
+		r.sub.WeeklyWindowStart, r.sub.WeeklyUsageUSD = &next, 0
+		r.resetCalls++
+	}
+	return nil
+}
+func (r *videoWindowSubscriptionRepo) ResetMonthlyUsage(_ context.Context, _ int64, expected *time.Time, next time.Time) error {
+	if r.resetErr != nil {
+		return r.resetErr
+	}
+	if expected != nil && r.sub.MonthlyWindowStart.Equal(*expected) {
+		r.sub.MonthlyWindowStart, r.sub.MonthlyUsageUSD = &next, 0
+		r.resetCalls++
+	}
+	return nil
+}
+
+type videoWindowLedger struct {
+	minimaxLedgerStub
+	sub *videoWindowSubscriptionRepo
+}
+
+func (l *videoWindowLedger) Apply(ctx context.Context, cmd *UsageBillingCommand) (*UsageBillingApplyResult, error) {
+	result, err := l.minimaxLedgerStub.Apply(ctx, cmd)
+	if err == nil && result.Applied {
+		l.sub.sub.DailyUsageUSD += cmd.SubscriptionCost
+		l.sub.sub.WeeklyUsageUSD += cmd.SubscriptionCost
+		l.sub.sub.MonthlyUsageUSD += cmd.SubscriptionCost
+	}
+	return result, err
+}
+
+func TestMinimaxSubscriptionSettlementMaintainsElapsedWindows(t *testing.T) {
+	for _, autoReset := range []bool{true, false} {
+		t.Run(fmt.Sprintf("auto_reset_%v", autoReset), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			oldDB := videoTaskHandle()
+			SetVideoTaskDB(db)
+			t.Cleanup(func() { SetVideoTaskDB(oldDB); db.Close() })
+			oldCache := videoBillingCacheHandle()
+			SetVideoBillingCache(nil)
+			t.Cleanup(func() { SetVideoBillingCache(oldCache) })
+			now := time.Now()
+			stale := now.Add(-45 * 24 * time.Hour)
+			task := minimaxBillableTask()
+			task.BillingSnapshot.SubscriptionID = 9
+			repo := &videoWindowSubscriptionRepo{sub: UserSubscription{ID: 9, UserID: task.UserID, GroupID: task.GroupID, StartsAt: stale, ExpiresAt: now.Add(90 * 24 * time.Hour), DailyWindowStart: &stale, WeeklyWindowStart: &stale, MonthlyWindowStart: &stale, DailyUsageUSD: 11, WeeklyUsageUSD: 22, MonthlyUsageUSD: 33}}
+			ledger := &videoWindowLedger{minimaxLedgerStub: minimaxLedgerStub{claims: map[string]string{}}, sub: repo}
+			cfg := &config.Config{}
+			cfg.SubscriptionMaintenance.AutoResetEnabled = autoReset
+			svc := &OpenAIGatewayService{cfg: cfg, userSubRepo: repo, usageBillingRepo: ledger, usageLogRepo: &minimaxUsageLogStub{}}
+			for range 2 {
+				mock.ExpectExec("UPDATE video_tasks").WithArgs(task.ID, 0.375, 0.5, VideoBillingModeLocalPrice).WillReturnResult(sqlmock.NewResult(0, 1))
+				_, err := svc.settleMinimaxVideoTask(context.Background(), task)
+				require.NoError(t, err)
+			}
+			require.Equal(t, 1, ledger.charges)
+			if autoReset {
+				require.Equal(t, 3, repo.resetCalls)
+				// Normal auth maintenance after completion must preserve the newly
+				// charged amount, including after an idempotent settlement retry.
+				maintenance := &SubscriptionService{userSubRepo: repo, autoResetEnabled: true, now: time.Now}
+				sub, _ := repo.GetByID(context.Background(), 9)
+				_, err := maintenance.EnsureWindowMaintenance(context.Background(), sub)
+				require.NoError(t, err)
+				require.Equal(t, 0.5, repo.sub.DailyUsageUSD)
+				require.Equal(t, 0.5, repo.sub.WeeklyUsageUSD)
+				require.Equal(t, 0.5, repo.sub.MonthlyUsageUSD)
+			} else {
+				require.Zero(t, repo.resetCalls)
+				require.Equal(t, 11.5, repo.sub.DailyUsageUSD)
+				require.Equal(t, 22.5, repo.sub.WeeklyUsageUSD)
+				require.Equal(t, 33.5, repo.sub.MonthlyUsageUSD)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestMinimaxSubscriptionMaintenanceFailurePreventsCharge(t *testing.T) {
+	now := time.Now()
+	stale := now.Add(-48 * time.Hour)
+	task := minimaxBillableTask()
+	task.BillingSnapshot.SubscriptionID = 9
+	repo := &videoWindowSubscriptionRepo{sub: UserSubscription{ID: 9, UserID: task.UserID, GroupID: task.GroupID, StartsAt: stale, ExpiresAt: now.Add(30 * 24 * time.Hour), DailyWindowStart: &stale, WeeklyWindowStart: &stale, MonthlyWindowStart: &stale}, resetErr: errors.New("temporary subscription storage failure")}
+	ledger := &minimaxLedgerStub{claims: map[string]string{}}
+	cfg := &config.Config{}
+	cfg.SubscriptionMaintenance.AutoResetEnabled = true
+	svc := &OpenAIGatewayService{cfg: cfg, userSubRepo: repo, usageBillingRepo: ledger, usageLogRepo: &minimaxUsageLogStub{}}
+	_, err := svc.settleMinimaxVideoTask(context.Background(), task)
+	require.ErrorContains(t, err, "temporary subscription storage failure")
+	require.Zero(t, ledger.charges)
 }

@@ -19,6 +19,8 @@ func adminVideoFilterFromQuery(c *gin.Context) service.VideoTaskFilter {
 	f := service.VideoTaskFilter{
 		Status:         strings.TrimSpace(c.Query("status")),
 		Model:          strings.TrimSpace(c.Query("model")),
+		Provider:       strings.TrimSpace(c.Query("provider")),
+		BillingOnly:    c.Query("billing_only") == "true",
 		Search:         strings.TrimSpace(c.Query("search")),
 		Page:           queryInt(c.Query("page"), 1),
 		PageSize:       queryInt(c.Query("page_size"), 20),
@@ -113,7 +115,18 @@ func (h *OpenAIGatewayHandler) AdminGetVideoTask(c *gin.Context) {
 
 // DeleteVideoTask 软删除任意任务。
 func (h *OpenAIGatewayHandler) AdminDeleteVideoTask(c *gin.Context) {
-	deleted, err := service.DeleteVideoTask(c.Request.Context(), strings.TrimSpace(c.Param("id")), 0)
+	taskID := strings.TrimSpace(c.Param("id"))
+	rec, err := service.GetVideoTask(c.Request.Context(), taskID, 0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to load task"})
+		return
+	}
+	if rec != nil && (rec.Status == service.MinimaxVideoStatusQueued || rec.Status == service.MinimaxVideoStatusProcessing ||
+		(rec.Status == service.MinimaxVideoStatusDone && rec.BillingStatus == "pending")) {
+		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "task generation or settlement is pending"})
+		return
+	}
+	deleted, err := service.DeleteVideoTask(c.Request.Context(), taskID, 0)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to delete task"})
 		return

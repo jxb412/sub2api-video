@@ -38,28 +38,33 @@ func videoTaskHandle() *sql.DB {
 
 // VideoTaskRecord is one row of video_tasks.
 type VideoTaskRecord struct {
-	ID              int64      `json:"-"`
-	TaskID          string     `json:"task_id"`
-	UpstreamID      string     `json:"upstream_id,omitempty"`
-	Provider        string     `json:"provider"`
-	Model           string     `json:"model"`
-	UpstreamModel   string     `json:"upstream_model,omitempty"`
-	Prompt          string     `json:"prompt"`
-	Status          string     `json:"status"`
-	Resolution      string     `json:"resolution,omitempty"`
-	DurationSeconds int        `json:"duration_seconds"`
-	UserID          int64      `json:"user_id"`
-	APIKeyID        int64      `json:"api_key_id"`
-	GroupID         int64      `json:"group_id"`
-	AccountID       int64      `json:"account_id"`
-	VideoURL        string     `json:"-"`
-	ErrorMessage    string     `json:"error_message,omitempty"`
-	UpstreamCostUSD float64    `json:"upstream_cost_usd"`
-	BilledCostUSD   float64    `json:"billed_cost_usd"`
-	BillingMode     string     `json:"billing_mode"`
-	CreatedAt       time.Time  `json:"created_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	ID                   int64      `json:"-"`
+	TaskID               string     `json:"task_id"`
+	UpstreamID           string     `json:"upstream_id,omitempty"`
+	Provider             string     `json:"provider"`
+	Model                string     `json:"model"`
+	UpstreamModel        string     `json:"upstream_model,omitempty"`
+	Prompt               string     `json:"prompt"`
+	Status               string     `json:"status"`
+	Resolution           string     `json:"resolution,omitempty"`
+	DurationSeconds      int        `json:"duration_seconds"`
+	UserID               int64      `json:"user_id"`
+	APIKeyID             int64      `json:"api_key_id"`
+	GroupID              int64      `json:"group_id"`
+	AccountID            int64      `json:"account_id"`
+	VideoURL             string     `json:"-"`
+	ErrorMessage         string     `json:"error_message,omitempty"`
+	UpstreamCostUSD      float64    `json:"upstream_cost_usd"`
+	BilledCostUSD        float64    `json:"billed_cost_usd"`
+	BillingMode          string     `json:"billing_mode"`
+	CreatedAt            time.Time  `json:"created_at"`
+	CompletedAt          *time.Time `json:"completed_at,omitempty"`
+	DeletedAt            *time.Time `json:"deleted_at,omitempty"`
+	SettledAt            *time.Time `json:"settled_at,omitempty"`
+	InputTokens          int        `json:"input_tokens"`
+	OutputTokens         int        `json:"output_tokens"`
+	BillingStatus        string     `json:"billing_status"`
+	UpstreamCostReported bool       `json:"upstream_cost_reported"`
 	// Display fields joined at query time.
 	UserEmail   string `json:"user_email,omitempty"`
 	GroupName   string `json:"group_name,omitempty"`
@@ -74,6 +79,8 @@ type VideoTaskFilter struct {
 	AccountID      int64
 	Status         string
 	Model          string
+	Provider       string
+	BillingOnly    bool
 	Search         string
 	From           *time.Time
 	To             *time.Time
@@ -84,27 +91,34 @@ type VideoTaskFilter struct {
 
 // VideoTaskStats is the aggregate shown on both overview cards.
 type VideoTaskStats struct {
-	Total        int64   `json:"total"`
-	Queued       int64   `json:"queued"`
-	Processing   int64   `json:"processing"`
-	Done         int64   `json:"done"`
-	Error        int64   `json:"error"`
-	Today        int64   `json:"today"`
-	UpstreamCost float64 `json:"upstream_cost_usd"`
-	BilledCost   float64 `json:"billed_cost_usd"`
-	SuccessRate  float64 `json:"success_rate"`
+	Total                    int64   `json:"total"`
+	Queued                   int64   `json:"queued"`
+	Processing               int64   `json:"processing"`
+	Done                     int64   `json:"done"`
+	Error                    int64   `json:"error"`
+	Today                    int64   `json:"today"`
+	UpstreamCost             float64 `json:"upstream_cost_usd"`
+	BilledCost               float64 `json:"billed_cost_usd"`
+	SuccessRate              float64 `json:"success_rate"`
+	UnknownUpstreamCostCount int64   `json:"unknown_upstream_cost_count"`
 }
 
 const videoTaskColumns = `task_id, upstream_id, provider, model, upstream_model, prompt, status,
 	resolution, duration_seconds, user_id, api_key_id, group_id, account_id, video_url,
-	error_message, upstream_cost_usd, billed_cost_usd, billing_mode, created_at, completed_at, deleted_at`
+	error_message, upstream_cost_usd, billed_cost_usd, billing_mode, created_at, completed_at, deleted_at,
+	settled_at, COALESCE((task_snapshot->>'input_tokens')::integer,0), COALESCE((task_snapshot->>'output_tokens')::integer,0),
+	CASE WHEN settled_at IS NOT NULL THEN 'settled' WHEN status='error' THEN 'not_charged' WHEN task_snapshot IS NULL THEN 'legacy' ELSE 'pending' END,
+	(COALESCE((task_snapshot->>'upstream_cost_reported')::boolean,false) OR upstream_cost_usd>0)`
 
 // videoTaskColumnsAliased 用于联表查询：users/groups/accounts/api_keys 都有
 // created_at 等同名列，不限定表别名会触发 ambiguous column 错误。
 const videoTaskColumnsAliased = `t.task_id, t.upstream_id, t.provider, t.model, t.upstream_model,
 	t.prompt, t.status, t.resolution, t.duration_seconds, t.user_id, t.api_key_id, t.group_id,
 	t.account_id, t.video_url, t.error_message, t.upstream_cost_usd, t.billed_cost_usd,
-	t.billing_mode, t.created_at, t.completed_at, t.deleted_at`
+	t.billing_mode, t.created_at, t.completed_at, t.deleted_at,
+	t.settled_at, COALESCE((t.task_snapshot->>'input_tokens')::integer,0), COALESCE((t.task_snapshot->>'output_tokens')::integer,0),
+	CASE WHEN t.settled_at IS NOT NULL THEN 'settled' WHEN t.status='error' THEN 'not_charged' WHEN t.task_snapshot IS NULL THEN 'legacy' ELSE 'pending' END,
+	(COALESCE((t.task_snapshot->>'upstream_cost_reported')::boolean,false) OR t.upstream_cost_usd>0)`
 
 func scanVideoTask(rows *sql.Rows, withJoins bool) (VideoTaskRecord, error) {
 	var r VideoTaskRecord
@@ -112,6 +126,7 @@ func scanVideoTask(rows *sql.Rows, withJoins bool) (VideoTaskRecord, error) {
 		&r.TaskID, &r.UpstreamID, &r.Provider, &r.Model, &r.UpstreamModel, &r.Prompt, &r.Status,
 		&r.Resolution, &r.DurationSeconds, &r.UserID, &r.APIKeyID, &r.GroupID, &r.AccountID, &r.VideoURL,
 		&r.ErrorMessage, &r.UpstreamCostUSD, &r.BilledCostUSD, &r.BillingMode, &r.CreatedAt, &r.CompletedAt, &r.DeletedAt,
+		&r.SettledAt, &r.InputTokens, &r.OutputTokens, &r.BillingStatus, &r.UpstreamCostReported,
 	}
 	if withJoins {
 		dest = append(dest, &r.UserEmail, &r.GroupName, &r.AccountName, &r.APIKeyName)
@@ -203,7 +218,8 @@ func DeleteVideoTask(ctx context.Context, taskID string, userID int64) (bool, er
 	if db == nil || strings.TrimSpace(taskID) == "" {
 		return false, nil
 	}
-	query := `UPDATE video_tasks SET deleted_at = now() WHERE task_id = $1 AND deleted_at IS NULL`
+	query := `UPDATE video_tasks SET deleted_at = now() WHERE task_id = $1 AND deleted_at IS NULL
+		AND (status='error' OR (status='done' AND (settled_at IS NOT NULL OR task_snapshot IS NULL)))`
 	args := []any{taskID}
 	if userID > 0 {
 		query += ` AND user_id = $2`
@@ -246,6 +262,12 @@ func ListVideoTasks(ctx context.Context, f VideoTaskFilter) ([]VideoTaskRecord, 
 	}
 	if strings.TrimSpace(f.Model) != "" {
 		add("t.model = $%d", strings.TrimSpace(f.Model))
+	}
+	if strings.TrimSpace(f.Provider) != "" {
+		add("t.provider = $%d", strings.TrimSpace(f.Provider))
+	}
+	if f.BillingOnly {
+		where = append(where, "t.status IN ('done','error')")
 	}
 	if s := strings.TrimSpace(f.Search); s != "" {
 		args = append(args, "%"+strings.ToLower(s)+"%")
@@ -327,6 +349,19 @@ func VideoTaskStatsFor(ctx context.Context, f VideoTaskFilter) (VideoTaskStats, 
 		args = append(args, f.AccountID)
 		where = append(where, fmt.Sprintf("account_id = $%d", len(args)))
 	}
+	for _, filter := range []struct{ column, value string }{{"provider", f.Provider}, {"model", f.Model}, {"status", f.Status}} {
+		if strings.TrimSpace(filter.value) != "" {
+			args = append(args, strings.TrimSpace(filter.value))
+			where = append(where, fmt.Sprintf(filter.column+" = $%d", len(args)))
+		}
+	}
+	if f.BillingOnly {
+		where = append(where, "status IN ('done','error')")
+	}
+	if search := strings.TrimSpace(f.Search); search != "" {
+		args = append(args, "%"+strings.ToLower(search)+"%")
+		where = append(where, fmt.Sprintf("(lower(task_id) LIKE $%d OR lower(prompt) LIKE $%d)", len(args), len(args)))
+	}
 	if f.From != nil {
 		args = append(args, *f.From)
 		where = append(where, fmt.Sprintf("created_at >= $%d", len(args)))
@@ -344,11 +379,12 @@ func VideoTaskStatsFor(ctx context.Context, f VideoTaskFilter) (VideoTaskStats, 
 		count(*) FILTER (WHERE status = 'error'),
 		count(*) FILTER (WHERE created_at >= date_trunc('day', now())),
 		COALESCE(sum(upstream_cost_usd),0),
-		COALESCE(sum(billed_cost_usd),0)
+		COALESCE(sum(billed_cost_usd),0),
+		count(*) FILTER (WHERE status='done' AND upstream_cost_usd=0 AND COALESCE((task_snapshot->>'upstream_cost_reported')::boolean,false)=false)
 		FROM video_tasks` + clause
 	if err := db.QueryRowContext(ctx, query, args...).Scan(
 		&stats.Total, &stats.Queued, &stats.Processing, &stats.Done, &stats.Error,
-		&stats.Today, &stats.UpstreamCost, &stats.BilledCost); err != nil {
+		&stats.Today, &stats.UpstreamCost, &stats.BilledCost, &stats.UnknownUpstreamCostCount); err != nil {
 		return stats, err
 	}
 	finished := stats.Done + stats.Error
@@ -376,12 +412,26 @@ func UpdateVideoTaskBilling(ctx context.Context, taskID string, upstreamCost, bi
 
 var ErrVideoTaskTerminal = errors.New("video task is already terminal")
 
+type videoTaskExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+type videoTaskQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 // saveMinimaxVideoTask is authoritative; cache publication happens afterwards.
 // A terminal row cannot be resurrected by a late worker after admin cancellation.
 func saveMinimaxVideoTask(ctx context.Context, task MinimaxVideoTask) error {
 	db := videoTaskHandle()
 	if db == nil {
 		return fmt.Errorf("video task database unavailable")
+	}
+	return saveMinimaxVideoTaskWithExecer(ctx, db, task)
+}
+
+func saveMinimaxVideoTaskWithExecer(ctx context.Context, db videoTaskExecer, task MinimaxVideoTask) error {
+	if task.Provider == "" {
+		task.Provider = "minimax"
 	}
 	payload, err := json.Marshal(task)
 	if err != nil {
@@ -403,7 +453,7 @@ func saveMinimaxVideoTask(ctx context.Context, task MinimaxVideoTask) error {
 		(task_id, provider, model, upstream_model, prompt, status, resolution, duration_seconds,
 		user_id, api_key_id, group_id, account_id, billing_mode, created_at, upstream_id,
 		video_url, error_message, upstream_cost_usd, completed_at, task_snapshot)
-		VALUES ($1,'minimax',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		VALUES ($1,$20,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (task_id) DO UPDATE SET status=EXCLUDED.status,
 		upstream_id=EXCLUDED.upstream_id, resolution=EXCLUDED.resolution,
 		duration_seconds=EXCLUDED.duration_seconds, video_url=EXCLUDED.video_url,
@@ -412,7 +462,7 @@ func saveMinimaxVideoTask(ctx context.Context, task MinimaxVideoTask) error {
 		WHERE video_tasks.status IN ('queued','processing')`,
 		task.ID, task.Model, task.UpstreamModel, task.Prompt, task.Status, task.Resolution,
 		task.DurationSeconds, task.UserID, task.APIKeyID, task.GroupID, task.AccountID,
-		task.BillingMode, created, task.UpstreamID, task.VideoURL, task.Error, task.UpstreamCostUSD, completed, string(payload))
+		task.BillingMode, created, task.UpstreamID, task.VideoURL, task.Error, task.UpstreamCostUSD, completed, string(payload), task.Provider)
 	if err != nil {
 		return err
 	}
@@ -431,6 +481,10 @@ func loadMinimaxVideoTaskFromDB(ctx context.Context, taskID string, userID, apiK
 	if db == nil {
 		return nil, fmt.Errorf("video task database unavailable")
 	}
+	return loadMinimaxVideoTaskWithQueryer(ctx, db, taskID, userID, apiKeyID)
+}
+
+func loadMinimaxVideoTaskWithQueryer(ctx context.Context, db videoTaskQueryer, taskID string, userID, apiKeyID int64) (*MinimaxVideoTask, error) {
 	var payload []byte
 	var task MinimaxVideoTask
 	var created time.Time
@@ -459,6 +513,19 @@ func loadMinimaxVideoTaskFromDB(ctx context.Context, taskID string, userID, apiK
 		task.PriceConfigured = snapshot.PriceConfigured
 		task.PricePerSecond = snapshot.PricePerSecond
 		task.RateMultiplier = snapshot.RateMultiplier
+		task.Provider = snapshot.Provider
+		task.BillingModel, task.ExpiresAt = snapshot.BillingModel, snapshot.ExpiresAt
+		task.LastPolledAt = snapshot.LastPolledAt
+		task.CreateStarted = snapshot.CreateStarted
+		task.AdmissionCost, task.AdmissionCostKnown = snapshot.AdmissionCost, snapshot.AdmissionCostKnown
+		task.InputTokens, task.OutputTokens, task.UsageReported = snapshot.InputTokens, snapshot.OutputTokens, snapshot.UsageReported
+		task.InputPricePerToken, task.OutputPricePerToken, task.TokenPricingConfigured = snapshot.InputPricePerToken, snapshot.OutputPricePerToken, snapshot.TokenPricingConfigured
+		task.UpstreamCostReported = snapshot.UpstreamCostReported
+		task.ProviderResponse = snapshot.ProviderResponse
+		task.ResolutionPrices, task.ResolutionTiers = snapshot.ResolutionPrices, snapshot.ResolutionTiers
+	}
+	if task.Provider == "" {
+		task.Provider = "minimax"
 	}
 	task.CreatedAt = created.UTC().Format(time.RFC3339Nano)
 	if completed != nil {
@@ -473,8 +540,10 @@ func claimMinimaxVideoTask(ctx context.Context, taskID string, userID, apiKeyID 
 	if db == nil {
 		return false, fmt.Errorf("video task database unavailable")
 	}
-	res, err := db.ExecContext(ctx, `UPDATE video_tasks SET status='processing'
-		WHERE task_id=$1 AND user_id=$2 AND api_key_id=$3 AND status='queued' AND deleted_at IS NULL`, taskID, userID, apiKeyID)
+	res, err := db.ExecContext(ctx, `UPDATE video_tasks SET status='processing',
+		task_snapshot=jsonb_set(task_snapshot,'{create_started}','true'::jsonb)
+		WHERE task_id=$1 AND user_id=$2 AND api_key_id=$3 AND status='queued' AND deleted_at IS NULL
+		AND COALESCE((task_snapshot->>'create_started')::boolean,false)=false`, taskID, userID, apiKeyID)
 	if err != nil {
 		return false, err
 	}

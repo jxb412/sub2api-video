@@ -160,7 +160,8 @@ function mountModal(groups: any[] = []) {
 }
 
 async function selectButtonByText(wrapper: ReturnType<typeof mountModal>, text: string) {
-  const button = wrapper.findAll('button').find((candidate) => candidate.text().includes(text))
+  const button = wrapper.findAll('button').find((candidate) => candidate.text() === text)
+    ?? wrapper.findAll('button').find((candidate) => candidate.text().includes(text))
   expect(button).toBeDefined()
   await button?.trigger('click')
 }
@@ -218,6 +219,49 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it('creates a Seedance API key account with an explicit video capability and model allowlist', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="video-account-preset-seedance"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-seedance"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-chat_completions"]').element.checked).toBe(false)
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-provider-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'openai', type: 'apikey',
+      credentials: expect.objectContaining({
+        openai_capabilities: ['seedance'],
+        base_url: 'https://ark.ap-southeast.bytepluses.com/api/v3',
+        model_mapping: expect.objectContaining({ 'seedance-1-0-pro-250528': 'seedance-1-0-pro-250528' }),
+      }),
+    }))
+    wrapper.unmount()
+  })
+
+  it('prepares MiniMax H3 without selecting the generic OpenAI origin', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="video-account-preset-minimax"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-minimax_video"]').element.checked).toBe(true)
+    const baseURL = wrapper.findAll<HTMLInputElement>('input').find(input => input.attributes('placeholder') === 'https://api.openai.com')
+    expect(baseURL?.element.value).toBe('')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-provider-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+    await baseURL!.setValue('https://video-provider.example/v1')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'openai', type: 'apikey', credentials: expect.objectContaining({
+        openai_capabilities: ['minimax_video'], base_url: 'https://video-provider.example/v1',
+        model_mapping: { 'MiniMax-H3': 'MiniMax-H3' },
+      }),
+    }))
+    wrapper.unmount()
+  })
 
   it('sets month and year expiry presets without submitting the account form', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })

@@ -4,6 +4,7 @@ import { apiClient } from './client'
 export interface VideoTask {
   task_id: string
   upstream_id?: string
+  upstream_model?: string
   provider: string
   model: string
   prompt: string
@@ -16,8 +17,13 @@ export interface VideoTask {
   account_id: number
   error_message?: string
   upstream_cost_usd: number
+  upstream_cost_reported?: boolean
   billed_cost_usd: number
   billing_mode: string
+  input_tokens?: number
+  output_tokens?: number
+  settled_at?: string | null
+  billing_status?: 'settled' | 'pending' | 'not_charged' | 'legacy'
   created_at: string
   completed_at?: string | null
   deleted_at?: string | null
@@ -35,6 +41,7 @@ export interface VideoTaskStats {
   error: number
   today: number
   upstream_cost_usd: number
+  unknown_upstream_cost_count?: number
   billed_cost_usd: number
   success_rate: number
 }
@@ -43,6 +50,8 @@ export interface VideoTaskListParams {
   page?: number
   page_size?: number
   status?: string
+  provider?: string
+  billing_only?: boolean
   model?: string
   search?: string
   group_id?: number

@@ -35,6 +35,18 @@ describe('GroupSelector simple-mode binding policy', () => {
     expect(wrapper.text()).toContain('Composite')
   })
 
+  it('offers MiniMax groups only for an explicitly capable OpenAI video relay', async () => {
+    const wrapper = mountSelector()
+    await wrapper.setProps({ platform: 'openai', groups: [
+      { id: 3, name: 'H3 group', platform: 'minimax', status: 'active' },
+      { id: 4, name: 'Seedance group', platform: 'openai', status: 'active' },
+    ] as any })
+    expect(wrapper.text()).toContain('Seedance group')
+    expect(wrapper.text()).not.toContain('H3 group')
+    await wrapper.setProps({ minimaxVideoCapable: true })
+    expect(wrapper.text()).toContain('H3 group')
+  })
+
   it('cleans hidden historical composite IDs while preserving visible selections', () => {
     authState.isSimpleMode = true
     const wrapper = mountSelector([1, 2])

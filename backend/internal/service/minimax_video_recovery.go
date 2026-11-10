@@ -19,6 +19,13 @@ func (s *OpenAIGatewayService) StartMinimaxVideoRecovery(ctx context.Context, in
 			slog.Error("minimax_video.recovery_failed", "error", err)
 		}
 		cancel()
+		for _, recoverProvider := range []func(context.Context) error{func(c context.Context) error { return s.recoverSeedanceVideoTasks(c, invalidators...) }, func(c context.Context) error { return s.recoverKnownMinimaxVideoTasks(c, invalidators...) }} {
+			pollCtx, pollCancel := context.WithTimeout(ctx, 35*time.Second)
+			if err := recoverProvider(pollCtx); err != nil && ctx.Err() == nil {
+				slog.Warn("video.poll_recovery_failed", "error", err)
+			}
+			pollCancel()
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -36,12 +43,15 @@ func (s *OpenAIGatewayService) recoverMinimaxVideoTasks(ctx context.Context, inv
 	// racing an active request in another replica. Old rows are repaired too.
 	if _, err := db.ExecContext(ctx, `UPDATE video_tasks SET status='error',
 		error_message='Video generation interrupted or timed out', completed_at=now()
-		WHERE status IN ('queued','processing') AND created_at < now()-interval '25 minutes'`); err != nil {
+		WHERE status IN ('queued','processing') AND
+		((provider <> 'seedance' AND upstream_id='' AND created_at < now()-interval '25 minutes') OR
+		 (provider='seedance' AND upstream_id='' AND created_at < now()-interval '25 minutes'))`); err != nil {
 		return err
 	}
 	rows, err := db.QueryContext(ctx, `SELECT task_snapshot FROM video_tasks
 		WHERE status='done' AND settled_at IS NULL AND task_snapshot IS NOT NULL
-		ORDER BY created_at LIMIT 100`)
+		AND jsonb_typeof(task_snapshot->'billing_snapshot')='object'
+		ORDER BY COALESCE((task_snapshot->>'last_settlement_attempt')::timestamptz,created_at) LIMIT 100`)
 	if err != nil {
 		return err
 	}
@@ -70,6 +80,7 @@ func (s *OpenAIGatewayService) recoverMinimaxVideoTasks(ctx context.Context, inv
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		_, _ = db.ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=jsonb_set(task_snapshot,'{last_settlement_attempt}',to_jsonb(now()::text)) WHERE task_id=$1 AND settled_at IS NULL`, task.ID)
 		if _, err := s.settleMinimaxVideoTask(ctx, task); err != nil {
 			slog.Error("minimax_video.settlement_retry_failed", "task_id", task.ID, "error", err)
 		}
@@ -78,6 +89,100 @@ func (s *OpenAIGatewayService) recoverMinimaxVideoTasks(ctx context.Context, inv
 		for _, invalidator := range invalidators {
 			if invalidator != nil {
 				invalidator.InvalidateAuthCacheByUserID(ctx, task.UserID)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *OpenAIGatewayService) recoverKnownMinimaxVideoTasks(ctx context.Context, invalidators ...APIKeyAuthCacheInvalidator) error {
+	rows, err := videoTaskHandle().QueryContext(ctx, `SELECT task_id,user_id,api_key_id FROM video_tasks
+		WHERE provider='minimax' AND upstream_id<>'' AND deleted_at IS NULL AND
+		(status IN ('queued','processing') OR (status='done' AND settled_at IS NULL AND billing_mode='upstream_cost' AND COALESCE((task_snapshot->>'upstream_cost_reported')::boolean,false)=false))
+		ORDER BY COALESCE((task_snapshot->>'last_polled_at')::timestamptz,created_at) LIMIT 100`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id        string
+		user, key int64
+	}
+	var tasks []pending
+	for rows.Next() {
+		var task pending
+		if err := rows.Scan(&task.id, &task.user, &task.key); err != nil {
+			rows.Close()
+			return err
+		}
+		tasks = append(tasks, task)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, p := range tasks {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		task, err := s.LoadMinimaxVideoTask(ctx, p.id, p.user, p.key)
+		if err != nil {
+			return err
+		}
+		if task == nil {
+			continue
+		}
+		if err := s.PollMinimaxVideoTask(ctx, task); err != nil {
+			slog.Warn("minimax_video.poll_retry_failed", "task_id", p.id, "error", err)
+		}
+		for _, i := range invalidators {
+			if i != nil {
+				i.InvalidateAuthCacheByUserID(ctx, p.user)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *OpenAIGatewayService) recoverSeedanceVideoTasks(ctx context.Context, invalidators ...APIKeyAuthCacheInvalidator) error {
+	rows, err := videoTaskHandle().QueryContext(ctx, `SELECT task_id,user_id,api_key_id FROM video_tasks
+		WHERE provider='seedance' AND (status IN ('queued','processing') OR
+		(status='done' AND settled_at IS NULL AND
+		 ((billing_mode='usage_tokens' AND COALESCE((task_snapshot->>'usage_reported')::boolean,false)=false) OR
+		  (billing_mode='upstream_cost' AND COALESCE((task_snapshot->>'upstream_cost_reported')::boolean,false)=false))))
+		AND upstream_id<>'' AND deleted_at IS NULL
+		ORDER BY COALESCE((task_snapshot->>'last_polled_at')::timestamptz,created_at) LIMIT 100`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id            string
+		userID, keyID int64
+	}
+	var pendingTasks []pending
+	for rows.Next() {
+		var p pending
+		if err := rows.Scan(&p.id, &p.userID, &p.keyID); err != nil {
+			rows.Close()
+			return err
+		}
+		pendingTasks = append(pendingTasks, p)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, task := range pendingTasks {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, err := s.pollSeedanceTask(ctx, task.id, task.userID, task.keyID); err != nil {
+			slog.Warn("seedance_video.poll_retry_failed", "task_id", task.id, "error", err)
+		}
+		for _, i := range invalidators {
+			if i != nil {
+				i.InvalidateAuthCacheByUserID(ctx, task.userID)
 			}
 		}
 	}

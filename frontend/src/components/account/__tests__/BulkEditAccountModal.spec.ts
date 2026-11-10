@@ -605,6 +605,20 @@ describe('BulkEditAccountModal', () => {
     })
   })
 
+  it('does not erase a two-capability MiniMax account as a default selection', async () => {
+    const wrapper = mountModal({ selectedPlatforms: ['openai'], selectedTypes: ['apikey'] })
+    await wrapper.get('#bulk-edit-openai-endpoint-capabilities-enabled').setValue(true)
+    await wrapper.get('[data-testid="bulk-edit-openai-endpoint-capability-chat_completions"]').setValue(false)
+    await wrapper.get('[data-testid="bulk-edit-openai-endpoint-capability-minimax_video"]').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], {
+      credentials: { openai_capabilities: ['embeddings', 'minimax_video'] },
+      extra: { openai_responses_mode: null },
+    })
+    wrapper.unmount()
+  })
+
   it('关闭端点能力修改后 Responses 路由恢复独立可编辑', async () => {
     const wrapper = mountModal({
       selectedPlatforms: ['openai'],

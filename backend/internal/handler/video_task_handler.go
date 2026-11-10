@@ -20,12 +20,14 @@ import (
 
 func minimaxVideoFilterFromQuery(c *gin.Context, userID int64) service.VideoTaskFilter {
 	f := service.VideoTaskFilter{
-		UserID:   userID,
-		Status:   strings.TrimSpace(c.Query("status")),
-		Model:    strings.TrimSpace(c.Query("model")),
-		Search:   strings.TrimSpace(c.Query("search")),
-		Page:     atoiDefault(c.Query("page"), 1),
-		PageSize: atoiDefault(c.Query("page_size"), 20),
+		UserID:      userID,
+		Status:      strings.TrimSpace(c.Query("status")),
+		Model:       strings.TrimSpace(c.Query("model")),
+		Provider:    strings.TrimSpace(c.Query("provider")),
+		BillingOnly: c.Query("billing_only") == "true",
+		Search:      strings.TrimSpace(c.Query("search")),
+		Page:        atoiDefault(c.Query("page"), 1),
+		PageSize:    atoiDefault(c.Query("page_size"), 20),
 	}
 	if raw := strings.TrimSpace(c.Query("from")); raw != "" {
 		if t, err := time.Parse(time.RFC3339, raw); err == nil {
@@ -114,6 +116,10 @@ func (h *OpenAIGatewayHandler) DeleteVideoTask(c *gin.Context) {
 	}
 	if rec != nil && (rec.Status == service.MinimaxVideoStatusQueued || rec.Status == service.MinimaxVideoStatusProcessing) {
 		h.errorResponse(c, http.StatusConflict, "invalid_request_error", "Generating tasks cannot be deleted")
+		return
+	}
+	if rec != nil && rec.Status == service.MinimaxVideoStatusDone && rec.BillingStatus == "pending" {
+		h.errorResponse(c, http.StatusConflict, "settlement_pending", "Task settlement is pending; retry deletion later")
 		return
 	}
 	deleted, err := service.DeleteVideoTask(c.Request.Context(), taskID, subject.UserID)

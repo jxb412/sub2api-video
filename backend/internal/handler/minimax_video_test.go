@@ -33,6 +33,8 @@ func TestMinimaxVideoAdmissionRequiresCapabilityAndDurableStorage(t *testing.T) 
 		c, w := grokMediaSlotContext(context.Background(), true)
 		key, _ := middleware.GetAPIKeyFromContext(c)
 		key.Group.Platform = service.PlatformMiniMax
+		price := 0.1
+		key.Group.VideoPrice720P = &price
 		c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{"model":"MiniMax-H3","prompt":"waves"}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		h.MinimaxVideoGeneration(c)

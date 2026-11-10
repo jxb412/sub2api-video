@@ -1471,6 +1471,7 @@ describe('EditAccountModal', () => {
   it('preserves Seedance when exactly two endpoint capabilities are selected', async () => {
     const account = buildAccount()
     account.credentials.openai_capabilities = ['chat_completions', 'seedance']
+    account.credentials.base_url = 'https://ark.ap-southeast.bytepluses.com/api/v3'
     updateAccountMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
@@ -1479,6 +1480,19 @@ describe('EditAccountModal', () => {
     expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-seedance"]').element.checked).toBe(true)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual(['chat_completions', 'seedance'])
+  })
+
+  it('preserves MiniMax and an unknown capability while editing account metadata', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['minimax_video', 'future_video']
+    account.credentials.base_url = 'https://video-provider.example/v1'
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-minimax_video"]').element.checked).toBe(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual(['minimax_video', 'future_video'])
+    wrapper.unmount()
   })
 
   it('keeps at least one OpenAI APIKey endpoint capability selected', async () => {

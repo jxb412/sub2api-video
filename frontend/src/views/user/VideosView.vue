@@ -126,18 +126,124 @@ onUnmounted(() => {
   if (pollTimer) window.clearTimeout(pollTimer)
 })
 
-const curlExample = `# ① 提交任务（立即返回，不阻塞）
+type ApiSample = {
+  key: string
+  label: string
+  title: string
+  endpoint: string
+  code: string
+  params: { name: string; type: string; required: string; desc: string }[]
+}
+
+const activeSample = ref('minimax_t2v')
+
+const apiSamples: ApiSample[] = [
+  {
+    key: 'minimax_t2v',
+    label: 'MiniMax-H3 文生',
+    title: 'MiniMax-H3 · 文生视频（/v1/videos/generations）',
+    endpoint: 'POST /v1/videos/generations',
+    code: `# MiniMax-H3 文生视频（异步：立即返回 task id）
 curl -X POST "$BASE/v1/videos/generations" \\
   -H "Authorization: Bearer $API_KEY" \\
   -H "Content-Type: application/json" \\
-  -d '{"model":"MiniMax-H3","prompt":"a cat running on grass","duration":5}'
+  -d '{
+    "model": "MiniMax-H3",
+    "prompt": "a cat running on grass, cinematic lighting",
+    "duration": 5,
+    "resolution": "768p"
+  }'
 
-# ② 轮询状态（5-10 秒一次）
-curl "$BASE/v1/videos/<task_id>" -H "Authorization: Bearer $API_KEY"
+# → {"id":"mmv_73663385...","status":"queued","model":"MiniMax-H3"}
 
-# ③ 下载视频
-curl -L "$BASE/v1/videos/<task_id>/content" \\
-  -H "Authorization: Bearer $API_KEY" -o video.mp4`
+# 轮询
+curl "$BASE/v1/videos/mmv_73663385..." -H "Authorization: Bearer $API_KEY"
+
+# 下载
+curl -L "$BASE/v1/videos/mmv_73663385.../content" \\
+  -H "Authorization: Bearer $API_KEY" -o video.mp4`,
+    params: [
+      { name: 'model', type: 'string', required: '是', desc: '固定 MiniMax-H3' },
+      { name: 'prompt', type: 'string', required: '是', desc: '提示词' },
+      { name: 'duration', type: 'int', required: '否', desc: '秒数，默认 5' },
+      { name: 'resolution', type: 'string', required: '否', desc: '480p / 720p / 768p / 1080p' },
+    ],
+  },
+  {
+    key: 'minimax_i2v',
+    label: 'MiniMax-H3 图生',
+    title: 'MiniMax-H3 · 图生视频（首帧驱动）',
+    endpoint: 'POST /v1/videos/generations',
+    code: `# 图生视频：多传 image_url（首帧图），其余参数与文生一致
+curl -X POST "$BASE/v1/videos/generations" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "MiniMax-H3",
+    "prompt": "the cat starts running, camera pans right",
+    "image_url": "https://example.com/first-frame.png",
+    "duration": 5
+  }'
+
+# 也支持 OpenAI 多模态写法：
+# {"content":[{"type":"text","text":"..."},{"type":"image_url","image_url":{"url":"..."}}]}`,
+    params: [
+      { name: 'image_url', type: 'string', required: '是', desc: '首帧图 URL，支持多张（数组）' },
+      { name: 'prompt', type: 'string', required: '否', desc: '动作描述；仅传图时按图续写' },
+      { name: 'duration', type: 'int', required: '否', desc: '秒数，默认 5' },
+    ],
+  },
+  {
+    key: 'seedance_t2v',
+    label: 'Seedance 文生',
+    title: 'Seedance（国际版）· 文生视频（原生 Ark 协议）',
+    endpoint: 'POST /api/v3/contents/generations/tasks',
+    code: `# Seedance 走火山 / BytePlus 原生任务协议，与 /v1/videos 完全不同
+curl -X POST "$BASE/api/v3/contents/generations/tasks" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "seedance-1-0-pro-250528",
+    "content": [
+      { "type": "text", "text": "a cat running on grass --resolution 720p --duration 5" }
+    ]
+  }'
+
+# → {"id":"cgt-2026..."}  查询：
+curl "$BASE/api/v3/contents/generations/tasks/cgt-2026..." \\
+  -H "Authorization: Bearer $API_KEY"`,
+    params: [
+      { name: 'model', type: 'string', required: '是', desc: 'seedance-1-0-pro / -lite-t2v' },
+      { name: 'content[].type', type: 'string', required: '是', desc: 'text 或 image_url' },
+      { name: 'content[].text', type: 'string', required: '是', desc: '提示词，可用 --resolution/--duration 追加参数' },
+    ],
+  },
+  {
+    key: 'seedance_i2v',
+    label: 'Seedance 图生',
+    title: 'Seedance（国际版）· 图生视频（首帧 + 文本）',
+    endpoint: 'POST /api/v3/contents/generations/tasks',
+    code: `# 图生视频：content 里同时放 image_url 与 text
+curl -X POST "$BASE/api/v3/contents/generations/tasks" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "seedance-1-0-lite-i2v-250428",
+    "content": [
+      { "type": "image_url", "image_url": { "url": "https://example.com/frame.png" } },
+      { "type": "text", "text": "the cat starts running --resolution 720p" }
+    ]
+  }'`,
+    params: [
+      { name: 'model', type: 'string', required: '是', desc: 'seedance-1-0-lite-i2v-250428' },
+      { name: 'content[].image_url.url', type: 'string', required: '是', desc: '首帧图 URL' },
+      { name: 'content[].text', type: 'string', required: '否', desc: '动作描述' },
+    ],
+  },
+]
+
+const currentSample = computed(() => apiSamples.find((s) => s.key === activeSample.value) ?? apiSamples[0])
+
 </script>
 
 <template>
@@ -350,15 +456,56 @@ curl -L "$BASE/v1/videos/<task_id>/content" \\
           <span class="text-xs text-slate-400">{{ showExamples ? '收起' : '展开' }}</span>
         </button>
         <div v-if="showExamples" class="space-y-4 border-t border-slate-100 px-4 py-4 dark:border-slate-800">
+          <!-- 协议切换 -->
+          <div class="flex flex-wrap gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800/60">
+            <button
+              v-for="smp in apiSamples"
+              :key="smp.key"
+              class="rounded-lg px-3 py-1.5 text-xs font-medium transition"
+              :class="activeSample === smp.key
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-900 dark:text-slate-100'
+                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'"
+              @click="activeSample = smp.key"
+            >
+              {{ smp.label }}
+            </button>
+          </div>
+
           <div>
             <div class="mb-2 flex items-center justify-between">
-              <span class="text-xs font-medium text-slate-600 dark:text-slate-300">完整流程（curl）</span>
-              <button class="text-xs text-indigo-600 hover:underline" @click="copy(curlExample)">
-                {{ copied === curlExample ? '已复制' : '复制' }}
+              <span class="text-xs font-medium text-slate-600 dark:text-slate-300">{{ currentSample.title }}</span>
+              <button class="text-xs text-indigo-600 hover:underline" @click="copy(currentSample.code)">
+                {{ copied === currentSample.code ? '已复制' : '复制' }}
               </button>
             </div>
-            <pre class="max-h-[420px] overflow-auto rounded-xl bg-slate-900 p-4 text-xs leading-relaxed text-slate-100"><code>{{ curlExample }}</code></pre>
+            <div class="mb-2 rounded-md bg-slate-50 px-2 py-1 font-mono text-[11px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+              {{ currentSample.endpoint }}
+            </div>
+            <pre class="max-h-[420px] overflow-auto rounded-xl bg-slate-900 p-4 text-xs leading-relaxed text-slate-100"><code>{{ currentSample.code }}</code></pre>
           </div>
+
+          <!-- 参数表 -->
+          <div class="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+            <table class="w-full text-xs">
+              <thead class="bg-slate-50 text-slate-500 dark:bg-slate-800/60 dark:text-slate-400">
+                <tr>
+                  <th class="px-3 py-2 text-left">参数</th>
+                  <th class="px-3 py-2 text-left">类型</th>
+                  <th class="px-3 py-2 text-left">必填</th>
+                  <th class="px-3 py-2 text-left">说明</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+                <tr v-for="p in currentSample.params" :key="p.name">
+                  <td class="px-3 py-2 font-mono text-slate-700 dark:text-slate-300">{{ p.name }}</td>
+                  <td class="px-3 py-2 text-slate-500">{{ p.type }}</td>
+                  <td class="px-3 py-2" :class="p.required === '是' ? 'text-rose-600' : 'text-slate-400'">{{ p.required }}</td>
+                  <td class="px-3 py-2 text-slate-600 dark:text-slate-400">{{ p.desc }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
           <div class="grid gap-3 text-xs text-slate-600 sm:grid-cols-2 dark:text-slate-400">
             <div class="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
               <div class="font-medium text-slate-700 dark:text-slate-200">响应字段</div>
@@ -381,7 +528,6 @@ curl -L "$BASE/v1/videos/<task_id>/content" \\
           </div>
         </div>
       </div>
-    </div>
 
     <!-- 详情抽屉 -->
     <div v-if="selected" class="fixed inset-0 z-40 flex justify-end bg-black/30" @click.self="selected = null">

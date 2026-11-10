@@ -45,6 +45,11 @@ var DefaultModels = []Model{
 	{ID: "gpt-image-2.6-sunburst", Object: "model", Created: 1793750400, OwnedBy: "openai", Type: "model", DisplayName: "GPT Image 2.6 Sunburst"},
 	// MiniMax H3 drives the async video generation path (see minimax_video.go).
 	{ID: "MiniMax-H3", Object: "model", Created: 1793750400, OwnedBy: "minimax", Type: "model", DisplayName: "MiniMax H3"},
+	// Seedance on BytePlus ModelArk (international Ark). Same wire protocol as
+	// the Volcengine Ark deployment; only base_url and model ids differ.
+	{ID: "seedance-1-0-pro-250528", Object: "model", Created: 1748390400, OwnedBy: "byteplus", Type: "model", DisplayName: "Seedance 1.0 Pro"},
+	{ID: "seedance-1-0-lite-t2v-250428", Object: "model", Created: 1745798400, OwnedBy: "byteplus", Type: "model", DisplayName: "Seedance 1.0 Lite (T2V)"},
+	{ID: "seedance-1-0-lite-i2v-250428", Object: "model", Created: 1745798400, OwnedBy: "byteplus", Type: "model", DisplayName: "Seedance 1.0 Lite (I2V)"},
 }
 
 // DefaultModelIDs returns the default model ID list

@@ -1,4 +1,49 @@
 {
+    "seedance-1-0-pro-250528": {
+        "litellm_provider": "byteplus",
+        "mode": "video_generation",
+        "cost_per_second_480p": 0.015,
+        "cost_per_second_720p": 0.03,
+        "cost_per_second_1080p": 0.06,
+        "max_seconds": 12,
+        "default_seconds": 5,
+        "supported_endpoints": [
+            "/api/v3/contents/generations/tasks"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
+    "seedance-1-0-lite-t2v-250428": {
+        "litellm_provider": "byteplus",
+        "mode": "video_generation",
+        "cost_per_second_480p": 0.008,
+        "cost_per_second_720p": 0.016,
+        "cost_per_second_1080p": 0.032,
+        "max_seconds": 12,
+        "default_seconds": 5,
+        "supported_endpoints": [
+            "/api/v3/contents/generations/tasks"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
+    "seedance-1-0-lite-i2v-250428": {
+        "litellm_provider": "byteplus",
+        "mode": "video_generation",
+        "cost_per_second_480p": 0.008,
+        "cost_per_second_720p": 0.016,
+        "cost_per_second_1080p": 0.032,
+        "max_seconds": 12,
+        "default_seconds": 5,
+        "supported_endpoints": [
+            "/api/v3/contents/generations/tasks"
+        ],
+        "supported_output_modalities": [
+            "video"
+        ]
+    },
     "MiniMax-H3": {
         "litellm_provider": "minimax",
         "mode": "video_generation",

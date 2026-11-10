@@ -613,6 +613,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoPrice1080P:                 videoPrice1080P,
 		VideoModelPrices:                NormalizeVideoModelPrices(input.VideoModelPrices),
 		VideoBillingMode:                normalizeVideoBillingModeInput(input.VideoBillingMode),
+		VideoResolutionTiers:            input.VideoResolutionTiers,
 		WebSearchPricePerCall:           webSearchPricePerCall,
 		SearchPricePer1k:                searchPricePer1k,
 		AudioRealtimePricePerMin:        audioRealtimePricePerMin,
@@ -950,6 +951,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 
 	if strings.TrimSpace(input.VideoBillingMode) != "" {
 		group.VideoBillingMode = normalizeVideoBillingModeInput(input.VideoBillingMode)
+	}
+	if input.VideoResolutionTiers != nil {
+		group.VideoResolutionTiers = input.VideoResolutionTiers
 	}
 	if input.WebSearchPricePerCall != nil {
 		group.WebSearchPricePerCall = normalizePrice(input.WebSearchPricePerCall)

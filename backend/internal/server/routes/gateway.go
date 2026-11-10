@@ -93,8 +93,15 @@ func RegisterGatewayRoutes(
 		// Video status/content lookups below already allow Composite groups; keep
 		// task creation aligned so composite keys that route to Grok accounts can
 		// submit video generation jobs.
-		if platform := getGroupPlatform(c); platform == service.PlatformGrok || platform == service.PlatformComposite {
+		platform := getGroupPlatform(c)
+		if platform == service.PlatformGrok || platform == service.PlatformComposite {
 			h.OpenAIGateway.GrokVideoGeneration(c)
+			return
+		}
+		// MiniMax H3 and other blocking video providers use the gateway-owned
+		// async bridge: the client gets a task id immediately and polls it.
+		if platform == service.PlatformMiniMax {
+			h.OpenAIGateway.MinimaxVideoGeneration(c)
 			return
 		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
@@ -113,6 +120,10 @@ func RegisterGatewayRoutes(
 			h.OpenAIGateway.GrokVideoStatus(c)
 			return
 		}
+		if getGroupPlatform(c) == service.PlatformMiniMax {
+			h.OpenAIGateway.MinimaxVideoStatus(c)
+			return
+		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": gin.H{
@@ -127,6 +138,10 @@ func RegisterGatewayRoutes(
 		// the Grok handler just like video status lookups.
 		if getGroupPlatform(c) == service.PlatformGrok || getGroupPlatform(c) == service.PlatformComposite {
 			h.OpenAIGateway.GrokVideoContent(c)
+			return
+		}
+		if getGroupPlatform(c) == service.PlatformMiniMax {
+			h.OpenAIGateway.MinimaxVideoContent(c)
 			return
 		}
 		service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalFeatureGate)

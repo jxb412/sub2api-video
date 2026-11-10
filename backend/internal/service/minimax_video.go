@@ -144,6 +144,29 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 	return info, nil
 }
 
+// ModerationBody renders the auditable part of the request (model + prompt +
+// input images) so the risk-control centre can inspect it exactly like the Grok
+// media path does.
+func (i MinimaxVideoRequestInfo) ModerationBody() []byte {
+	if strings.TrimSpace(i.Prompt) == "" && len(i.InputImageURLs) == 0 {
+		return nil
+	}
+	payload := map[string]any{"model": i.Model}
+	if i.Prompt != "" {
+		payload["prompt"] = i.Prompt
+	}
+	if len(i.InputImageURLs) == 1 {
+		payload["image_url"] = i.InputImageURLs[0]
+	} else if len(i.InputImageURLs) > 1 {
+		payload["image_url"] = i.InputImageURLs
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
 // MinimaxVideoBaseURL returns the configured upstream base URL without a
 // trailing slash, falling back to the Getoken gateway.
 func MinimaxVideoBaseURL(account *Account) string {

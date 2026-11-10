@@ -9,6 +9,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"log/slog"
 )
 
 // Async bridge for MiniMax-style video providers.
@@ -208,4 +211,85 @@ func MinimaxVideoTaskStatusBody(task MinimaxVideoTask, contentPath string) []byt
 		return []byte(`{"status":"error","error":{"message":"failed to render status"}}`)
 	}
 	return body
+}
+
+
+// BindMinimaxVideoTaskAccount ties a task id to the account that owns it so
+// status/content polls resolve without re-running the scheduler.
+func (s *OpenAIGatewayService) BindMinimaxVideoTaskAccount(
+	ctx context.Context, groupID *int64, taskID string, userID, apiKeyID, accountID int64,
+) error {
+	return s.BindGrokMediaVideoRequestAccount(ctx, groupID, taskID, userID, apiKeyID, accountID)
+}
+
+// RunMinimaxVideoTask performs the blocking upstream call and publishes the
+// terminal state. It is meant to be started as a goroutine by the handler.
+func (s *OpenAIGatewayService) RunMinimaxVideoTask(
+	ctx context.Context, taskID string, userID, apiKeyID int64,
+	targetURL, bearerToken string, body []byte,
+) {
+	if s == nil {
+		return
+	}
+	started := time.Now()
+	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
+		task.Status = MinimaxVideoStatusProcessing
+	})
+	result, err := ExecuteMinimaxVideoTask(ctx, MinimaxVideoUpstreamClient(0), targetURL, bearerToken, body)
+	if err != nil {
+		slog.Warn("minimax_video.task_failed", "task_id", taskID, "error", err, "elapsed", time.Since(started))
+		_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
+			task.Status = MinimaxVideoStatusError
+			task.Error = err.Error()
+			task.CompletedAt = GrokVideoPendingCreatedAtNow()
+		})
+		return
+	}
+	_ = s.UpdateMinimaxVideoTask(ctx, taskID, userID, apiKeyID, func(task *MinimaxVideoTask) {
+		task.Status = MinimaxVideoStatusDone
+		task.UpstreamID = result.UpstreamID
+		task.VideoURL = result.VideoURL
+		task.UpstreamCostUSD = result.UpstreamCostUSD
+		if result.Resolution != "" {
+			task.Resolution = result.Resolution
+		}
+		if result.DurationSeconds > 0 {
+			task.DurationSeconds = result.DurationSeconds
+		}
+		task.CompletedAt = GrokVideoPendingCreatedAtNow()
+	})
+	slog.Info("minimax_video.task_done", "task_id", taskID, "elapsed", time.Since(started),
+		"upstream_cost_usd", result.UpstreamCostUSD)
+}
+
+// StreamMinimaxVideoContent proxies the finished video bytes to the client.
+func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *MinimaxVideoTask) error {
+	if s == nil || c == nil || task == nil || strings.TrimSpace(task.VideoURL) == "" {
+		return fmt.Errorf("video content is unavailable")
+	}
+	url := task.VideoURL
+	if strings.HasPrefix(url, "/") {
+		// Upstream reports a path relative to its own base URL.
+		url = strings.TrimRight(DefaultGetokenBaseURL, "/") + url
+	}
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := MinimaxVideoUpstreamClient(10 * time.Minute).Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("upstream returned %d", resp.StatusCode)
+	}
+	contentType := resp.Header.Get("content-type")
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	c.Header("content-type", contentType)
+	c.Status(http.StatusOK)
+	_, err = io.Copy(c.Writer, resp.Body)
+	return err
 }

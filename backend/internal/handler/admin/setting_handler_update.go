@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"fmt"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1267,7 +1268,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 
 	// 自定义菜单项验证
 	const (
-		maxCustomMenuItems    = 20
+		// 自定义菜单项不再限制数量：运营需要按业务线不断增加入口，
+		// 每项仍受 label/URL/SVG 长度约束，避免整体载荷失控。
+		maxCustomMenuItems    = 500
 		maxMenuItemLabelLen   = 50
 		maxMenuItemURLLen     = 2048
 		maxMenuItemIconSVGLen = 10 * 1024 // 10KB
@@ -1278,7 +1281,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if req.CustomMenuItems != nil {
 		items := *req.CustomMenuItems
 		if len(items) > maxCustomMenuItems {
-			response.BadRequest(c, "Too many custom menu items (max 20)")
+			response.BadRequest(c, fmt.Sprintf("Too many custom menu items (max %d)", maxCustomMenuItems))
 			return
 		}
 		for i, item := range items {

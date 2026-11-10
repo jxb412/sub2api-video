@@ -33,6 +33,11 @@ jobs:
           SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
           echo "image=ghcr.io/${OWNER}/${REPO}" >> "$GITHUB_OUTPUT"
           echo "tag=${SHORT}" >> "$GITHUB_OUTPUT"
+          TAGS="ghcr.io/${OWNER}/${REPO}:${SHORT}"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            TAGS="${TAGS},ghcr.io/${OWNER}/${REPO}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
         with:
@@ -41,8 +46,6 @@ jobs:
           platforms: linux/amd64
           build-args: |
             COMMIT=${{ github.sha }}
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
-            ${{ steps.meta.outputs.image }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

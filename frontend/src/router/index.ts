@@ -229,6 +229,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/videos',
+    name: 'Videos',
+    component: () => import('@/views/user/VideosView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Video Tasks',
+      titleKey: 'nav.videos',
+      descriptionKey: 'nav.videosDescription'
+    }
+  },
+  {
     path: '/usage',
     name: 'Usage',
     component: () => import('@/views/user/UsageView.vue'),
@@ -644,6 +656,18 @@ const routes: RouteRecordRaw[] = [
       titleKey: 'admin.promptAudit.title',
       descriptionKey: 'admin.promptAudit.description',
       requiresRiskControl: true
+    }
+  },
+  {
+    path: '/admin/videos',
+    name: 'AdminVideos',
+    component: () => import('@/views/admin/VideosView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Video Tasks',
+      titleKey: 'nav.adminVideos',
+      descriptionKey: 'nav.adminVideosDescription'
     }
   },
   {

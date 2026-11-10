@@ -191,7 +191,8 @@ func (h *OpenAIGatewayHandler) MinimaxVideoContent(c *gin.Context) {
 		h.errorResponse(c, http.StatusConflict, "invalid_request_error", "Video is not ready")
 		return
 	}
-	if err := h.gatewayService.StreamMinimaxVideoContent(c, task); err != nil {
+	baseURL, token := h.gatewayService.MinimaxVideoAccountCredentials(c.Request.Context(), task.AccountID)
+	if err := h.gatewayService.StreamMinimaxVideoContent(c, task, baseURL, token); err != nil {
 		h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
 	}
 }

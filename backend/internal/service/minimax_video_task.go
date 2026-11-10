@@ -262,8 +262,25 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 		"upstream_cost_usd", result.UpstreamCostUSD)
 }
 
+// MinimaxVideoAccountCredentials returns the upstream base URL and API key of
+// the account that owns a task, so content downloads can authenticate.
+func (s *OpenAIGatewayService) MinimaxVideoAccountCredentials(ctx context.Context, accountID int64) (string, string) {
+	if s == nil || s.accountRepo == nil || accountID <= 0 {
+		return DefaultGetokenBaseURL, ""
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || account == nil {
+		return DefaultGetokenBaseURL, ""
+	}
+	base := strings.TrimSpace(account.GetCredential("base_url"))
+	if base == "" {
+		base = DefaultGetokenBaseURL
+	}
+	return base, strings.TrimSpace(account.GetCredential("api_key"))
+}
+
 // StreamMinimaxVideoContent proxies the finished video bytes to the client.
-func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *MinimaxVideoTask) error {
+func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *MinimaxVideoTask, baseURL, token string) error {
 	if s == nil || c == nil || task == nil || strings.TrimSpace(task.VideoURL) == "" {
 		return fmt.Errorf("video content is unavailable")
 	}
@@ -271,13 +288,19 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	if strings.HasPrefix(url, "/") {
 		// Upstream reports a path that already contains the /v1 prefix, so the
 		// configured base URL must be reduced to its origin before joining.
-		base := strings.TrimRight(DefaultGetokenBaseURL, "/")
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = DefaultGetokenBaseURL
+		}
+		base := strings.TrimRight(baseURL, "/")
 		base = strings.TrimSuffix(base, "/v1")
 		url = base + url
 	}
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
 	if err != nil {
 		return err
+	}
+	if token = strings.TrimSpace(token); token != "" {
+		req.Header.Set("authorization", "Bearer "+token)
 	}
 	resp, err := MinimaxVideoUpstreamClient(10 * time.Minute).Do(req)
 	if err != nil {

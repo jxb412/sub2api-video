@@ -1968,6 +1968,15 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == "" {
 		return true
 	}
+	// The video endpoints are scheduled through the shared media capability, so
+	// a MiniMax video account must satisfy it even though it is not a Grok one.
+	if capability == OpenAIEndpointCapabilityGrokMediaGeneration {
+		configured, _ := a.openAIEndpointCapabilitySet()
+		if configured["minimax_video"] {
+			return strings.TrimSpace(a.GetCredential("base_url")) != "" &&
+				strings.TrimSpace(a.GetCredential("api_key")) != ""
+		}
+	}
 	if !a.IsOpenAICompatible() {
 		return false
 	}

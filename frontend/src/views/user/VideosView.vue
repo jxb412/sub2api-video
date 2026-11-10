@@ -528,6 +528,7 @@ const currentSample = computed(() => apiSamples.find((s) => s.key === activeSamp
           </div>
         </div>
       </div>
+    </div>
 
     <!-- 详情抽屉 -->
     <div v-if="selected" class="fixed inset-0 z-40 flex justify-end bg-black/30" @click.self="selected = null">

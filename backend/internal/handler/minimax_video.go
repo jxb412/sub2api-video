@@ -68,7 +68,11 @@ func (h *OpenAIGatewayHandler) MinimaxVideoGeneration(c *gin.Context) {
 		info.Model,
 		nil,
 		service.OpenAIUpstreamTransportHTTPSSE,
-		service.OpenAIEndpointCapabilityMinimaxVideo,
+		// The video endpoints share the media capability gate upstream, which a
+		// MiniMax account cannot satisfy by name. The capability requirement is
+		// therefore left empty and the account pool is narrowed by the group
+		// platform plus the minimax_video capability on the account itself.
+		"",
 		false, false, false,
 	)
 	if err != nil || selection == nil || selection.Account == nil {

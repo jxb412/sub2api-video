@@ -105,6 +105,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	// 视频任务持久化复用同一个连接池：在装配处注入一次，
 	// 后续 service 层无需再传递 DB 句柄。
 	service.SetVideoTaskDB(db)
+	service.SetVideoBillingCache(billingCacheService)
 
 	usageLogRepository := repository.NewUsageLogRepository(client, db)
 	usageService := service.NewUsageService(usageLogRepository, userRepository, client, apiKeyAuthCacheInvalidator)

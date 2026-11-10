@@ -3,8 +3,29 @@ package service
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
+
+// 视频结算需要的扣费通道。与 videoTaskDB 一样用包级句柄注入，
+// 避免把 BillingCacheService 穿过整条 handler → goroutine 链路。
+var (
+	videoBillingCacheMu sync.RWMutex
+	videoBillingCache   *BillingCacheService
+)
+
+// SetVideoBillingCache 在装配处注入扣费缓存服务。
+func SetVideoBillingCache(svc *BillingCacheService) {
+	videoBillingCacheMu.Lock()
+	videoBillingCache = svc
+	videoBillingCacheMu.Unlock()
+}
+
+func videoBillingCacheHandle() *BillingCacheService {
+	videoBillingCacheMu.RLock()
+	defer videoBillingCacheMu.RUnlock()
+	return videoBillingCache
+}
 
 // MiniMax 视频任务的结算与记账。
 //
@@ -135,8 +156,25 @@ func (s *OpenAIGatewayService) writeMinimaxVideoUsageLog(ctx context.Context, ta
 		"mode", settlement.BillingMode, "source", settlement.PriceSource)
 }
 
-// chargeMinimaxVideoUsage 记录扣费意图；额度扣减由 billing cache 统一执行。
+// chargeMinimaxVideoUsage 真正扣减余额与订阅用量。
+// 两步都失败时只记日志：视频已经交付，扣费失败不应让任务状态回滚，
+// 由对账任务按 usage_logs 补扣。
 func (s *OpenAIGatewayService) chargeMinimaxVideoUsage(ctx context.Context, task MinimaxVideoTask, settlement MinimaxVideoSettlement) {
-	slog.Info("minimax_video.charge", "task_id", task.ID, "user_id", task.UserID,
-		"amount", settlement.BilledCost, "mode", settlement.BillingMode)
+	billing := videoBillingCacheHandle()
+	if billing == nil {
+		slog.Warn("minimax_video.charge_skipped_no_billing_cache", "task_id", task.ID)
+		return
+	}
+	if err := billing.DeductBalanceCache(ctx, task.UserID, settlement.BilledCost); err != nil {
+		slog.Warn("minimax_video.deduct_balance_failed", "task_id", task.ID,
+			"user_id", task.UserID, "amount", settlement.BilledCost, "error", err)
+	} else {
+		slog.Info("minimax_video.balance_deducted", "task_id", task.ID,
+			"user_id", task.UserID, "amount", settlement.BilledCost)
+	}
+	if task.GroupID > 0 {
+		if err := billing.UpdateSubscriptionUsage(ctx, task.UserID, task.GroupID, settlement.BilledCost); err != nil {
+			slog.Warn("minimax_video.subscription_usage_failed", "task_id", task.ID, "error", err)
+		}
+	}
 }

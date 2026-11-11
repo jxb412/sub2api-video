@@ -1074,7 +1074,7 @@
           </label>
           <p v-if="createForm.platform === 'openai' || createForm.platform === 'composite'" class="mb-3 text-xs text-gray-500">
             {{ t("admin.groups.videoPricing.seedanceSetupHint") }}
-            <a href="https://www.yunqiao.me/guide#video-admin" target="_blank" rel="noopener noreferrer" class="text-indigo-600 hover:underline">{{ t("admin.groups.videoPricing.setupGuide") }}</a>
+            <router-link to="/admin/videos" class="text-indigo-600 hover:underline">{{ t("admin.groups.videoPricing.setupGuide") }}</router-link>
           </p>
           <div class="mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -2753,7 +2753,7 @@
           </label>
           <p v-if="editForm.platform === 'openai' || editForm.platform === 'composite'" class="mb-3 text-xs text-gray-500">
             {{ t("admin.groups.videoPricing.seedanceSetupHint") }}
-            <a href="https://www.yunqiao.me/guide#video-admin" target="_blank" rel="noopener noreferrer" class="text-indigo-600 hover:underline">{{ t("admin.groups.videoPricing.setupGuide") }}</a>
+            <router-link to="/admin/videos" class="text-indigo-600 hover:underline">{{ t("admin.groups.videoPricing.setupGuide") }}</router-link>
           </p>
           <div class="mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">

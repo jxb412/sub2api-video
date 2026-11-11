@@ -175,10 +175,10 @@ onUnmounted(() => { disposed = true; loadSequence++; detailSequence++; if (pollT
 
 <template>
   <AppLayout>
-    <div class="mx-auto w-full max-w-screen-2xl space-y-5 px-4 py-6">
-      <div class="flex items-center justify-between gap-3">
-        <div><h1 class="text-xl font-semibold">视频任务管理</h1><p class="mt-1 text-sm text-slate-500">MiniMax H3 与 Seedance 的异常处理、用户结算与采购成本对账</p></div>
-        <button class="btn btn-secondary" :disabled="loading" @click="load()">{{ loading ? '刷新中…' : '刷新' }}</button>
+    <div class="video-admin mx-auto min-w-0 w-full max-w-screen-2xl space-y-5 py-6 sm:px-4">
+      <div class="flex min-w-0 items-start justify-between gap-3">
+        <div class="min-w-0"><h1 class="text-xl font-semibold">视频任务管理</h1><p class="mt-1 text-sm text-slate-500">MiniMax H3 与 Seedance 的异常处理、用户结算与采购成本对账</p></div>
+        <button class="btn btn-secondary shrink-0" :disabled="loading" @click="load()">{{ loading ? '刷新中…' : '刷新' }}</button>
       </div>
       <details class="rounded-lg border border-slate-200 p-3 text-xs text-slate-600 dark:border-slate-700 dark:text-slate-300">
         <summary class="cursor-pointer font-medium">管理说明：重试、超时与成本口径</summary>
@@ -187,12 +187,12 @@ onUnmounted(() => { disposed = true; loadSequence++; detailSequence++; if (pollT
         <p class="mt-2">金额按站内额度记录：充值人民币 1 元对应 1 额度，界面沿用 $ 符号，不进行汇率换算。失败任务也可能产生供应商费用。已对账毛利仅统计录入实际扣费的任务，不代表全部任务利润。</p>
       </details>
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-6">
-        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">筛选内任务 / 生成中</div><div class="mt-1 text-xl font-semibold">{{ stats?.total ?? 0 }} / {{ (stats?.queued ?? 0) + (stats?.processing ?? 0) }}</div></div>
-        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">用户实收</div><div class="mt-1 font-semibold">{{ money(stats?.billed_cost_usd ?? 0) }}</div></div>
-        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">采购估算合计</div><div class="mt-1 font-semibold">{{ money(procurementStats?.estimated_cost_total ?? 0) }}</div><p class="mt-1 text-xs text-slate-500">仅含已录入估算</p></div>
-        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">供应商实际扣费</div><div class="mt-1 font-semibold">{{ procurementStats?.actual_cost_count ? money(procurementStats.actual_cost_total) : '未核实' }}</div><p class="mt-1 text-xs text-slate-500">已核实 {{ procurementStats?.actual_cost_count ?? 0 }} 条</p></div>
-        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">待采购对账</div><div class="mt-1 text-xl font-semibold text-amber-600">{{ procurementStats?.pending_count ?? stats?.unknown_upstream_cost_count ?? 0 }}</div><p class="mt-1 text-xs text-slate-500">未提供实际扣费不按零成本计算</p></div>
-        <div class="rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">已对账任务毛利率</div><div class="mt-1 text-xl font-semibold">{{ procurementStats?.confirmed_margin_percent == null ? '待核算' : `${procurementStats.confirmed_margin_percent.toFixed(1)}%` }}</div><p class="mt-1 text-xs text-slate-500">仅基于已核实实际扣费</p></div>
+        <div class="min-w-0 rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">筛选内任务 / 生成中</div><div class="mt-1 text-xl font-semibold">{{ stats?.total ?? 0 }} / {{ (stats?.queued ?? 0) + (stats?.processing ?? 0) }}</div></div>
+        <div class="min-w-0 rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">用户实收</div><div class="mt-1 whitespace-nowrap font-semibold">{{ money(stats?.billed_cost_usd ?? 0) }}</div></div>
+        <div class="min-w-0 rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">采购估算合计</div><div class="mt-1 whitespace-nowrap font-semibold">{{ money(procurementStats?.estimated_cost_total ?? 0) }}</div><p class="mt-1 text-xs text-slate-500">仅含已录入估算</p></div>
+        <div class="min-w-0 rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">供应商实际扣费</div><div class="mt-1 whitespace-nowrap font-semibold">{{ procurementStats?.actual_cost_count ? money(procurementStats.actual_cost_total) : '未核实' }}</div><p class="mt-1 text-xs text-slate-500">已核实 {{ procurementStats?.actual_cost_count ?? 0 }} 条</p></div>
+        <div class="min-w-0 rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">待采购对账</div><div class="mt-1 text-xl font-semibold text-amber-600">{{ procurementStats?.pending_count ?? stats?.unknown_upstream_cost_count ?? 0 }}</div><p class="mt-1 text-xs text-slate-500">未提供实际扣费不按零成本计算</p></div>
+        <div class="min-w-0 rounded-xl border border-slate-200 p-4 dark:border-slate-700"><div class="text-xs text-slate-500">已对账任务毛利率</div><div class="mt-1 text-xl font-semibold">{{ procurementStats?.confirmed_margin_percent == null ? '待核算' : `${procurementStats.confirmed_margin_percent.toFixed(1)}%` }}</div><p class="mt-1 text-xs text-slate-500">仅基于已核实实际扣费</p></div>
       </div>
       <div class="flex flex-wrap gap-2" role="group" aria-label="任务视图">
         <button class="btn" :class="!exceptionFilter ? 'btn-primary' : 'btn-secondary'" data-testid="video-all-tab" @click="exceptionFilter = ''">全部任务</button>
@@ -203,19 +203,19 @@ onUnmounted(() => { disposed = true; loadSequence++; detailSequence++; if (pollT
         <p class="w-full text-xs text-slate-500">同一任务可有多种异常。计数遵循当前筛选条件。</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <select v-model="providerFilter" aria-label="视频供应商" data-testid="video-provider-filter" class="input w-auto"><option value="">全部供应商</option><option value="minimax">MiniMax H3</option><option value="seedance">Seedance / BytePlus</option></select>
+        <select v-model="providerFilter" aria-label="视频供应商" data-testid="video-provider-filter" class="input min-w-0 max-w-full w-auto"><option value="">全部供应商</option><option value="minimax">MiniMax H3</option><option value="seedance">Seedance / BytePlus</option></select>
         <input v-model="userId" type="number" min="1" aria-label="用户 ID" placeholder="用户 ID" class="input w-28" @keyup.enter="query" />
         <input v-model="groupId" type="number" min="1" aria-label="分组 ID" placeholder="分组 ID" class="input w-28" @keyup.enter="query" />
         <input v-model="accountId" type="number" min="1" aria-label="账号 ID" placeholder="账号 ID" class="input w-28" @keyup.enter="query" />
-        <select v-model="statusFilter" aria-label="任务状态" class="input w-auto"><option value="">全部状态</option><option v-for="(label, value) in statusLabel" :key="value" :value="value">{{ label }}</option></select>
-        <select v-model="modelFilter" aria-label="模型" class="input w-auto"><option value="">全部模型</option><option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option></select>
-        <select v-model="reconciliationFilter" aria-label="采购对账状态" class="input w-auto"><option value="">全部对账状态</option><option value="pending">待采购对账</option><option value="reconciled">已核实实际扣费</option></select>
+        <select v-model="statusFilter" aria-label="任务状态" class="input min-w-0 max-w-full w-auto"><option value="">全部状态</option><option v-for="(label, value) in statusLabel" :key="value" :value="value">{{ label }}</option></select>
+        <select v-model="modelFilter" aria-label="模型" class="input min-w-0 max-w-full w-auto"><option value="">全部模型</option><option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option></select>
+        <select v-model="reconciliationFilter" aria-label="采购对账状态" class="input min-w-0 max-w-full w-auto"><option value="">全部对账状态</option><option value="pending">待采购对账</option><option value="reconciled">已核实实际扣费</option></select>
         <input v-model="search" aria-label="任务搜索" placeholder="任务 ID / 提示词" class="input min-w-[180px] flex-1" @keyup.enter="query" />
         <label class="flex items-center gap-1 text-xs text-slate-500"><input v-model="includeDeleted" type="checkbox" /> 含已删除</label>
         <button class="btn btn-secondary" @click="query">查询</button>
       </div>
-      <div class="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
-        <div class="overflow-x-auto"><table class="w-full text-sm">
+      <div class="min-w-0 w-full overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+        <div class="min-w-0 max-w-full overflow-x-auto" data-testid="video-table-scroll"><table class="w-full min-w-[1100px] text-sm">
           <thead class="bg-slate-50 text-xs text-slate-500 dark:bg-slate-800"><tr><th class="px-3 py-3 text-left">任务 / 用户</th><th class="px-3 py-3 text-left">分组 / 账号</th><th class="px-3 py-3 text-left">模型 / 用量</th><th class="px-3 py-3 text-left">状态 / 异常</th><th class="px-3 py-3 text-right">采购成本</th><th class="px-3 py-3 text-right">用户实收</th><th class="px-3 py-3 text-left">创建</th><th class="px-3 py-3 text-right">操作</th></tr></thead>
           <tbody class="divide-y divide-slate-100 dark:divide-slate-800">
             <tr v-for="task in tasks" :key="task.task_id" class="hover:bg-slate-50 dark:hover:bg-slate-800/40">
@@ -236,7 +236,7 @@ onUnmounted(() => { disposed = true; loadSequence++; detailSequence++; if (pollT
             <tr v-if="!tasks.length && !loading"><td colspan="8" class="px-4 py-16 text-center text-slate-500">暂无符合条件的视频任务</td></tr>
           </tbody>
         </table></div>
-        <div class="flex items-center justify-between border-t border-slate-100 px-4 py-3 dark:border-slate-800"><span class="text-xs text-slate-500">共 {{ total }} 条</span><Pagination v-model:page="page" v-model:page-size="pageSize" :total="total" /></div>
+        <div class="flex min-w-0 flex-col gap-2 border-t border-slate-100 p-3 dark:border-slate-800"><span class="text-xs text-slate-500">共 {{ total }} 条</span><Pagination class="min-w-0 w-full" v-model:page="page" v-model:page-size="pageSize" :total="total" /></div>
       </div>
     </div>
     <div v-if="detail" class="fixed inset-0 z-40 flex justify-end bg-black/30" @click.self="closeDetail">
@@ -293,3 +293,19 @@ onUnmounted(() => { disposed = true; loadSequence++; detailSequence++; if (pollT
     </div>
   </AppLayout>
 </template>
+
+<style scoped>
+.video-admin th,
+.video-admin td:nth-child(4),
+.video-admin td:nth-child(5),
+.video-admin td:nth-child(6),
+.video-admin td:nth-child(7) {
+  white-space: nowrap;
+}
+.video-admin td:nth-child(2),
+.video-admin td:nth-child(3) {
+  min-width: 140px;
+  max-width: 190px;
+  overflow-wrap: anywhere;
+}
+</style>

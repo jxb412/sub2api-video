@@ -93,9 +93,12 @@ func FilterCodexModelIDsForGroup(modelIDs []string, group *Group) []string {
 
 func isCodexDedicatedMediaModel(modelID string) bool {
 	canonical := codexProviderQualifiedModelID(modelID)
+	normalized := strings.ToLower(canonical)
 	return IsGPTImageGenerationModel(canonical) ||
 		isImageGenerationModel(canonical) ||
-		xai.IsGrokImagineModel(modelID)
+		xai.IsGrokImagineModel(modelID) ||
+		normalized == "minimax-h3" || strings.HasPrefix(normalized, "minimax-h3-") ||
+		normalized == "seedance" || strings.HasPrefix(normalized, "seedance-")
 }
 
 func codexProviderQualifiedModelID(modelID string) string {

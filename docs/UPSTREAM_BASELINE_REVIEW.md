@@ -29,6 +29,11 @@ or settled billing records are rewritten. Applied migration checksums must
 remain unchanged. The Build workflow now exercises the full Linux unit and
 integration suites and frontend checks, rather than a video-only name filter.
 
+The full regression run also caught H3 and Seedance leaking into Codex's
+text-model catalog. The shared Codex media filter now excludes those video
+models and mapped aliases, while the general `/v1/models` catalog preserves
+their MiniMax and BytePlus owner metadata. Tests cover both behaviors.
+
 Production `142.54.187.42` was separately upgraded to Quya 0.4.24-quya.1.
 This video merge is validated and deployed only on the 154 test environment.
 

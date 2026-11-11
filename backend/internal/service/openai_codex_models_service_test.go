@@ -565,8 +565,8 @@ func TestBuildCodexModelsManifestLeavesServiceTiersEmptyForOtherModels(t *testin
 	}
 }
 
-// Scenario: 专用图片生成模型不进入 Codex 主模型目录。
-func TestBuildCodexModelsManifestOmitsDedicatedImageModels(t *testing.T) {
+// Scenario: dedicated image and video models do not enter the Codex model catalog.
+func TestBuildCodexModelsManifestOmitsDedicatedMediaModels(t *testing.T) {
 	t.Parallel()
 
 	body, err := BuildCodexModelsManifest([]string{
@@ -583,7 +583,15 @@ func TestBuildCodexModelsManifestOmitsDedicatedImageModels(t *testing.T) {
 		"grok-imagine-image",
 		"grok-imagine-video",
 		"xai/grok-imagine-image-quality",
+		"MiniMax-H3",
+		"minimax/MiniMax-H3",
+		"minimax-h3-20261110",
+		"seedance-1-0-pro-250528",
+		"seedance-1-0-lite-t2v-250428",
+		"seedance-1-0-lite-i2v-250428",
+		"byteplus/Seedance-1-0-pro-250528",
 		"grok-4.5",
+		"MiniMax-M2.5",
 	})
 	require.NoError(t, err)
 	models := decodeCodexManifestModels(t, body)
@@ -592,7 +600,7 @@ func TestBuildCodexModelsManifestOmitsDedicatedImageModels(t *testing.T) {
 		slug, _ := model["slug"].(string)
 		slugs = append(slugs, slug)
 	}
-	require.Equal(t, []string{"grok-4.6", "grok-4.5"}, slugs)
+	require.Equal(t, []string{"grok-4.6", "grok-4.5", "MiniMax-M2.5"}, slugs)
 }
 
 func TestBuildCodexModelsManifestForGroupAdvertisesOfficialGrokResponsesImageInput(t *testing.T) {
@@ -1082,7 +1090,11 @@ func TestBuildCodexModelsManifestForGroupOmitsDedicatedMediaTargetAlias(t *testi
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeAPIKey,
 			Credentials: map[string]any{
-				"model_mapping": map[string]any{"creative-alias": "gpt-image-2"},
+				"model_mapping": map[string]any{
+					"creative-alias": "gpt-image-2",
+					"h3-alias":       "MiniMax-H3",
+					"video-alias":    "byteplus/seedance-1-0-pro-250528",
+				},
 			},
 		}},
 	}}}
@@ -1091,7 +1103,7 @@ func TestBuildCodexModelsManifestForGroupOmitsDedicatedMediaTargetAlias(t *testi
 		context.Background(),
 		&Group{ID: groupID, Platform: PlatformComposite},
 		"",
-		[]string{"creative-alias"},
+		[]string{"creative-alias", "h3-alias", "video-alias"},
 	)
 	require.NoError(t, err)
 	require.Empty(t, decodeCodexManifestModels(t, body))
@@ -1269,6 +1281,10 @@ func TestBuildGroupConfiguredCodexModelsManifestUsesAdministratorConfiguration(t
 	require.Equal(t, "glm-5.3", models[0]["slug"])
 	require.Contains(t, codexManifestModelSlugs(t, manifest.Body), "gpt-5.6-sol")
 	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "gpt-image-2")
+	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "MiniMax-H3")
+	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "seedance-1-0-pro-250528")
+	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "seedance-1-0-lite-t2v-250428")
+	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "seedance-1-0-lite-i2v-250428")
 	require.NotContains(t, codexManifestModelSlugs(t, manifest.Body), "codex-auto-review")
 	require.Equal(t, "GLM 5.3", models[0]["display_name"])
 	require.Equal(t, []string{"low", "medium", "high"}, effortsFromManifestModel(t, models[0]))

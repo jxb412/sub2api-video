@@ -37,7 +37,7 @@ override environment defaults. 768p maps to the 720p pricing tier unless
 overridden. Model prices override the group's resolution price. Independent
 video multipliers and per-user group overrides use existing gateway semantics.
 LL2 requires `local_price` with an explicitly configured seconds price and
-rejects `upstream_cost` and `usage_tokens`. It does not report actual USD cost.
+rejects `upstream_cost` and `usage_tokens`. It does not report actual procurement cost.
 The mode, price, payer and multiplier are fixed when the task is accepted.
 Known local charges reserve balance, API key and subscription headroom before
 submission. A PostgreSQL admission transaction locks the user/account and fresh
@@ -49,16 +49,16 @@ that hold even if the later task settlement marker is delayed. Only the
 completion ledger debits the payer. Redis reservations continue to coordinate
 normal gateway traffic while the worker is alive.
 
-This is not a universal dollar cap: token/upstream-cost amounts are estimates
+This is not a universal monetary cap: token/upstream-cost amounts are estimates
 until the provider returns final usage, and actual fees can exceed an estimate.
-Account dollar quotas use provider cost (or token base cost), not the user's
-local sale price. LL2 actual cost is unreported, so its account dollar usage
+Account monetary quotas use provider cost (or token base cost), not the user's
+local sale price. LL2 actual cost is unreported, so its account monetary usage
 cannot be accumulated precisely from this API. LL2 accounts with enabled
 monetary account quotas are rejected before submission; manage procurement
 budgets in the supplier console. User balance, subscription and API-key quotas
 still use the configured sale price. Any future purchase estimate must be
 explicitly labelled as an estimate, not actual cost. Existing scheduler checks
-of recorded account usage remain in place, without new durable account-dollar
+of recorded account usage remain in place, without new durable account monetary
 holds. Ordinary chat/image
 admission does not read video-task holds from PostgreSQL; after Redis reservation
 loss, ordinary traffic and videos do not have a shared durable reservation pool.
@@ -75,15 +75,22 @@ retain the official nontransactional cache update path: a crash immediately
 after ledger commit may omit that secondary statistic. Transactional balance,
 subscription and API-key ledger effects are unaffected.
 
-When a verified purchase baseline of `p` USD/second is entered as the local
-price, an effective multiplier of 1.2 sells at `p * 1.2` USD/second. For an
-illustrative `p = 0.075` and 5 output seconds, the configured baseline is
-USD 0.375 and the user pays USD 0.45. This is 20% markup on the baseline and
-16.67% gross margin on sales, assuming the baseline equals actual cost and
-ignoring other expenses. It is not 20% gross margin. These amounts are examples,
-not verified LL2 tariffs or invoices. Unknown actual cost stays unreported; do
-not derive supplier cost or profit from local prices. Explicit zero prices and
-multipliers remain valid.
+This deployment uses RMB recharge and balance settlement: RMB 1 funds 1 unit
+of site credit, displayed using the existing `$1` convention. No foreign
+exchange conversion occurs. Local seconds and token prices use site credits;
+`usd` field names and dollar symbols are compatibility names, not evidence
+that LL2 charges US dollars. Reconcile procurement against supplier invoices.
+
+When an RMB purchase baseline is entered as `p` site credits/second, an
+effective multiplier of 1.2 sells at `p * 1.2` site credits/second. For an
+illustrative RMB 0.05/second purchase baseline (subject to the actual supplier
+invoice), configure 0.05 site credits/second and sell at 0.06 site credits/second.
+A 5-second video deducts 0.30 site credits, against an illustrative procurement
+baseline of RMB 0.25. This is 20% markup and 16.67% gross margin on sales,
+assuming the baseline equals actual cost and ignoring other expenses. It is
+not 20% gross margin. These are formula examples, not verified LL2 tariffs or
+invoices. Unknown actual cost stays unreported; do not derive supplier cost or
+profit from local prices. Explicit zero prices and multipliers remain valid.
 
 LL2 settlement requires reported `usage.output_seconds` consistent with the
 submitted duration. Missing or inconsistent seconds remain pending for further
@@ -119,9 +126,12 @@ intent is saved before the outbound POST under a PostgreSQL advisory lock.
 The upstream `Idempotency-Key` is the gateway task ID; configured header
 overrides cannot replace this key or LL2 bearer authorization. On an ambiguous
 create result, recovery reuses the same bytes, key and bound account identity
-for at most 24 hours from admission, or an earlier stored expiry. Each attempt
-has a bounded request timeout. A saved provider ID ends submission recovery;
-subsequent recovery only polls that ID.
+for at most 24 hours from admission, or an earlier stored expiry. This is the
+gateway's automatic recovery limit; the supplier has not committed to an
+idempotency-record retention period, so this window is not a guaranteed
+24-hour supplier idempotency TTL. Each attempt has a bounded request timeout.
+A saved provider ID ends submission recovery; subsequent recovery only polls
+that ID.
 
 Protocol, URL or credential/header changes on the bound account stop recovery
 and polling until the original configuration is restored. Do not mutate the

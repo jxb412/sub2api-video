@@ -115,10 +115,21 @@ func SnapshotVideoExecutionPolicy(task *MinimaxVideoTask, account *Account) erro
 		}
 	}
 	task.ExecutionPolicy = &policy
-	if task.Provider == VideoProviderSeedance {
-		task.UpstreamBaseURL = strings.TrimRight(strings.TrimSpace(account.GetCredential("base_url")), "/")
-		task.UpstreamCredentialHash = minimaxCredentialHash(account)
+	return nil
+}
+
+// SnapshotSeedanceVideoIdentity uses exactly the normalization used by both
+// submission and polling, including the configured outbound URL allowlist.
+func (s *OpenAIGatewayService) SnapshotSeedanceVideoIdentity(task *MinimaxVideoTask, account *Account) error {
+	if task == nil || account == nil || task.Provider != VideoProviderSeedance {
+		return fmt.Errorf("Seedance task account unavailable")
 	}
+	base, err := s.validateUpstreamBaseURL(account.GetCredential("base_url"))
+	if err != nil {
+		return err
+	}
+	task.UpstreamBaseURL = base
+	task.UpstreamCredentialHash = minimaxCredentialHash(account)
 	return nil
 }
 

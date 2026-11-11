@@ -208,9 +208,9 @@ func (s *OpenAIGatewayService) callMinimaxVideoProtocol(ctx context.Context, acc
 		return MinimaxVideoTask{}, fmt.Errorf("minimax video account credential unavailable")
 	}
 	ctx = WithHTTPUpstreamRedirectsDisabled(ctx)
-	if method == http.MethodPost {
-		ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileVideo)
-	}
+	// Both submit and status requests obey the task's configured timeout. The
+	// generic transport's shorter header timeout must not override that policy.
+	ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileVideo)
 	do := MinimaxVideoUpstreamClient(20 * time.Minute).Do
 	if s.httpUpstream != nil {
 		proxy := ""

@@ -237,6 +237,12 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 		h.errorResponse(c, http.StatusBadRequest, "video_account_configuration_error", err.Error())
 		return
 	}
+	if provider == service.VideoProviderSeedance {
+		if err := h.gatewayService.SnapshotSeedanceVideoIdentity(&task, account); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "video_account_configuration_error", "Invalid Seedance provider URL")
+			return
+		}
+	}
 
 	task.BillingModel = info.Model
 	switch channelMapping.BillingModelSource {

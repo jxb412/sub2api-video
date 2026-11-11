@@ -5,11 +5,13 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,6 +49,59 @@ func TestVideoExecutionPolicyValidationAndDefaults(t *testing.T) {
 	}
 	require.NoError(t, ValidateVideoExecutionPolicyExtra(nil))
 	require.NoError(t, ValidateVideoExecutionPolicyExtra(map[string]any{"video_execution_policy": nil}))
+}
+
+func TestSeedanceIdentityUsesSameNormalizedBaseAsSubmissionAndPoll(t *testing.T) {
+	for _, allowlist := range []bool{false, true} {
+		t.Run(map[bool]string{false: "format validation", true: "allowlist normalization"}[allowlist], func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Security.URLAllowlist.Enabled = allowlist
+			cfg.Security.URLAllowlist.UpstreamHosts = []string{"provider.example"}
+			svc := &OpenAIGatewayService{cfg: cfg}
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"base_url": " https://provider.example/%61pi/v3/// ", "api_key": "never-persist-me", "openai_capabilities": []string{"seedance"},
+			}}
+			task := MinimaxVideoTask{Provider: VideoProviderSeedance}
+			require.NoError(t, svc.SnapshotSeedanceVideoIdentity(&task, account))
+			base, err := svc.validateUpstreamBaseURL(account.GetCredential("base_url"))
+			require.NoError(t, err)
+			require.Equal(t, base, task.UpstreamBaseURL)
+			createURL, _, err := svc.SeedanceVideoRequest(account, []byte(`{"model":"seedance"}`), "seedance")
+			require.NoError(t, err)
+			pollURL, err := buildSeedanceURL(task.UpstreamBaseURL, SeedanceEndpointStatus, "original-task")
+			require.NoError(t, err)
+			require.Equal(t, createURL+"/original-task", pollURL)
+			if allowlist {
+				require.Equal(t, "https://provider.example/api/v3", task.UpstreamBaseURL)
+			}
+			payload, err := json.Marshal(task)
+			require.NoError(t, err)
+			require.NotContains(t, string(payload), "never-persist-me")
+		})
+	}
+}
+
+func TestVideoStatusRequestsUseVideoTransportTimeoutProfile(t *testing.T) {
+	for _, protocol := range []string{MinimaxVideoProtocolGetoken, MinimaxVideoProtocolLL2, VideoProviderSeedance} {
+		t.Run(protocol, func(t *testing.T) {
+			upstream := &minimaxWorkerHTTP{status: http.StatusOK, body: `{"id":"original-task","task_id":"original-task","status":"processing"}`}
+			if protocol == MinimaxVideoProtocolLL2 {
+				upstream.body = `{"task":{"id":"original-task","status":"running"}}`
+			}
+			svc := &OpenAIGatewayService{httpUpstream: upstream}
+			account := minimaxWorkerTestAccount()
+			if protocol == VideoProviderSeedance {
+				_, err := svc.callSeedanceVideo(context.Background(), account, http.MethodGet, "https://provider.example/status", nil)
+				require.NoError(t, err)
+			} else {
+				_, err := svc.callMinimaxVideoProtocol(context.Background(), account, protocol, http.MethodGet, "https://provider.example/status", nil, "")
+				require.NoError(t, err)
+			}
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, HTTPUpstreamProfileVideo, HTTPUpstreamProfileFromContext(upstream.requests[0].Context()))
+			require.True(t, HTTPUpstreamRedirectsDisabled(upstream.requests[0].Context()))
+		})
+	}
 }
 
 func TestVideoExecutionFailureBudgetAndSafeErrors(t *testing.T) {

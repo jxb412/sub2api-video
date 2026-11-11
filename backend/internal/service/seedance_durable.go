@@ -301,9 +301,7 @@ func (s *OpenAIGatewayService) callSeedanceVideo(ctx context.Context, account *A
 	if account == nil || strings.TrimSpace(account.GetCredential("api_key")) == "" {
 		return result, fmt.Errorf("Seedance account credential unavailable")
 	}
-	if method == http.MethodPost {
-		ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileVideo)
-	}
+	ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileVideo)
 	req, err := http.NewRequestWithContext(WithHTTPUpstreamRedirectsDisabled(ctx), method, target, bytes.NewReader(body))
 	if err != nil {
 		return result, err

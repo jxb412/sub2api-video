@@ -159,6 +159,20 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 		return
 	}
 	account := selection.Account
+	if provider != service.VideoProviderSeedance {
+		protocol, protocolErr := service.MinimaxVideoProtocol(account)
+		if protocolErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", protocolErr.Error())
+			return
+		}
+		if protocol == service.MinimaxVideoProtocolLL2 {
+			info, err = service.NormalizeLL2MinimaxVideoRequest(info)
+			if err != nil {
+				h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+				return
+			}
+		}
+	}
 	bindContentModerationAccountScope(c, account)
 	if moderationBody := info.ModerationBody(); len(moderationBody) > 0 {
 		decision := h.checkSecurityAudit(c, reqLog, apiKey, subject, service.ContentModerationProtocolOpenAIImages, info.Model, moderationBody)
@@ -184,10 +198,7 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 	if provider == service.VideoProviderSeedance {
 		targetURL, upstreamBody, err = h.gatewayService.SeedanceVideoRequest(account, body, account.GetMappedModel(routingModel))
 	} else {
-		upstreamBody, err = service.BuildMinimaxVideoUpstreamBody(info, account.GetMappedModel(routingModel))
-		if err == nil {
-			targetURL, err = h.gatewayService.MinimaxVideoRequestURL(account)
-		}
+		targetURL, upstreamBody, err = h.gatewayService.MinimaxVideoRequest(account, info, account.GetMappedModel(routingModel))
 	}
 	if err != nil {
 		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Invalid video request or upstream URL")
@@ -202,6 +213,7 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 		Prompt:          info.Prompt,
 		DurationSeconds: info.DurationSeconds,
 		Resolution:      info.Resolution,
+		Ratio:           info.Ratio,
 		UserID:          subject.UserID,
 		APIKeyID:        apiKey.ID,
 		AccountID:       account.ID,
@@ -209,6 +221,12 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 	}
 	if apiKey.GroupID != nil {
 		task.GroupID = *apiKey.GroupID
+	}
+	if provider != service.VideoProviderSeedance {
+		if err := h.gatewayService.SnapshotMinimaxVideoProtocol(&task, account, upstreamBody); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "video_account_configuration_error", err.Error())
+			return
+		}
 	}
 
 	// 计费快照：把分组的价格与倍率固定在任务上。
@@ -279,6 +297,8 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 		defer release()
 		if provider == service.VideoProviderSeedance {
 			h.gatewayService.RunSeedanceVideoTask(workerCtx, task, account, targetURL, upstreamBody)
+		} else if task.UpstreamProtocol == service.MinimaxVideoProtocolLL2 {
+			h.gatewayService.RunLL2MinimaxVideoWorker(workerCtx, task.ID, task.UserID, task.APIKeyID)
 		} else {
 			h.gatewayService.RunMinimaxVideoTask(workerCtx, task.ID, task.UserID, task.APIKeyID, targetURL, token, upstreamBody)
 		}

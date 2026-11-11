@@ -53,22 +53,36 @@ curl --fail-with-body "$GATEWAY/v1/models" \
 
 ## MiniMax H3 完整调用 {#minimax-h3}
 
-### 适用协议与参数
+### 参数与输入方式
 
-这里的 `MiniMax-H3` 是本站接入的 H3 视频中转协议，采用 `/v1/videos/generations` JSON 请求。它不是 MiniMax 官方所有视频产品接口的统称，不能直接替换成其他厂商视频接口或上传文件接口。
+`MiniMax-H3` 使用本站 `POST /v1/videos/generations` JSON 接口。下列参数适用于本站新 H3 接口；可用模型与权限以控制台为准。
 
 | 参数 | 类型 | 必填 / 默认值 | 本网关行为 |
 |---|---|---|---|
 | `model` | string | 必填 | 示例 `MiniMax-H3`；使用控制台展示的模型名 |
-| `prompt` | string | 纯文生视频必填 | 描述主体、动作、镜头、环境等 |
-| `duration` | integer | 默认 5 | 秒数；网关接受整数，最终支持时长由上游模型决定，建议先使用已验证的 5 秒 |
-| `resolution` | string | H3 默认 `768p` | `MiniMax-H3` 目前仅接受 `768p`；不能因为收费档叫 720p 就发送 `720p` |
-| `image_url` | string 或 string[] | 可选 | 上游可访问的参考图片 URL；实际图片数量、尺寸、格式支持由供应商决定 |
-| `content` | object[] | 可选替代形式 | 可包含 `text` 和 `image_url`；有 `prompt` 时以 `prompt` 为文本输入 |
+| `prompt` | string | 简单输入方式必填 | 1–7000 个字符，描述主体、动作、镜头、环境等；使用 `content` 时不要传此字段 |
+| `duration` | integer | 默认 5 | 输出时长，1–15 秒 |
+| `resolution` | string | 默认 `768p` | 只接受 `768p` / `768P`；返回值可能规范化为 `768P`，不能发送 `720p` 或 `1080p` |
+| `ratio` | string | 默认 `16:9` | `21:9`、`16:9`、`4:3`、`1:1`、`3:4`、`9:16`、`adaptive`；`adaptive` 必须同时提供图片或视频 |
+| `image_url` | string 或 string[] | 简单输入方式可选 | 与 `prompt` 搭配；单图作为首帧，多图作为参考图；使用 `content` 时不要传此字段 |
+| `content` | object[] | 与简单输入方式二选一 | 恰好一项文本，加可选的图片、视频、音频；详见下表 |
 
 兼容别名：`seconds`、`duration_seconds` 可作为时长字段，`size`、`output_resolution` 可作为分辨率字段。新接入建议只使用 `duration` 和 `resolution`；同一组别名只能传一个，即使值相同，同时传多个也会被拒绝。
 
-本网关会将已支持的字段转换成供应商请求，不透传任意 H3 扩展字段。未支持的顶层字段在接单前返回 400。`ratio`、`seed`、音频参数、multipart 文件上传等未列出的 H3 功能不应传入，不能照搬 Seedance 请求。
+两种输入方式不能混用：使用 `content` 时，顶层 `prompt` 与 `image_url` 必须完全省略，即使传空字符串也会被拒绝。每个请求都需要非空文本。
+
+| `content` 项 | 格式 | 角色与数量 |
+|---|---|---|
+| 文本 | `{"type":"text","text":"描述内容"}` | 恰好一项，1–7000 个字符 |
+| 图片 | `{"type":"image_url","image_url":{"url":"https://…"},"role":"first_frame"}` | 角色为 `first_frame`、`last_frame` 或 `reference_image`；首帧、尾帧各最多一张，参考图最多 9 张 |
+| 视频 | `{"type":"video_url","video_url":{"url":"https://…"},"role":"reference_video"}` | 参考视频最多 3 个 |
+| 音频 | `{"type":"audio_url","audio_url":{"url":"https://…"},"role":"reference_audio"}` | 参考音频最多 3 个 |
+
+整个 `content` 最多 13 项，即一项文本和最多 12 项媒体。首帧/尾帧方式与参考素材方式互斥：提供 `first_frame` 或 `last_frame` 后，不能再混入任何 `reference_image`、`reference_video` 或 `reference_audio`。参考素材合计最多 12 项，同时满足各类型上限。只有一张图片且没有写角色时，默认作为首帧；多张图片必须分别写明角色。视频和音频必须写明对应的参考角色。
+
+素材必须是无需登录即可读取的公网 HTTPS URL。地址不能包含用户名/密码、片段标识或内网地址；带签名的查询参数可以保留，但有效期应覆盖生成过程。本网关不接收本地文件路径、Base64 素材或 multipart 上传。素材格式、编码、尺寸及长度还需满足模型要求，服务端可能在异步生成阶段返回素材错误。
+
+未支持的字段返回 400；不要传入 `seed`、`frames`、`callback_url`、`return_last_frame`、`generate_audio` 等参数，也不要直接套用 Seedance 请求。
 
 ### 文生视频：创建一次
 
@@ -80,7 +94,8 @@ curl --fail-with-body "$GATEWAY/v1/videos/generations" \
     "model": "MiniMax-H3",
     "prompt": "A calm blue ocean at sunset, gentle waves, slow cinematic camera movement",
     "duration": 5,
-    "resolution": "768p"
+    "resolution": "768P",
+    "ratio": "16:9"
   }'
 ```
 
@@ -92,21 +107,21 @@ curl --fail-with-body "$GATEWAY/v1/videos/generations" \
   "request_id": "mmv_example_task_id",
   "status": "queued",
   "model": "MiniMax-H3",
-  "created_at": "2026-11-11T02:00:00Z"
+  "created_at": "2026-11-12T02:00:00Z"
 }
 ```
 
 | 返回字段 | 含义 |
 |---|---|
 | `id` | 本站任务 ID，后续查询和下载使用它 |
-| `request_id` | 与 `id` 相同，便于兼容供应商形状 |
+| `request_id` | 与 `id` 相同 |
 | `status` | `queued` 表示已接受，并不代表生成成功 |
 | `model` | 你请求的公开模型名 |
 | `created_at` | 创建时间，RFC3339 格式 |
 
 创建响应目前使用 HTTP 200。是否完成应看 JSON `status`，不能把“HTTP 200”解释为“视频已经生成”。
 
-### 图生视频：传参考图 URL
+### 图生视频：单张首帧
 
 ```bash
 curl --fail-with-body "$GATEWAY/v1/videos/generations" \
@@ -121,21 +136,44 @@ curl --fail-with-body "$GATEWAY/v1/videos/generations" \
   }'
 ```
 
-也可把输入写成以下 `content` 形式；不要同时把同一张图片重复放在 `image_url` 和 `content` 中：
+### 首尾帧：使用 `content`
+
+用首帧和尾帧描述镜头的起点与终点。此时不要再传顶层 `prompt`、`image_url` 或参考素材：
 
 ```json
 {
   "model": "MiniMax-H3",
   "content": [
-    {"type": "text", "text": "The camera slowly approaches the scene"},
-    {"type": "image_url", "image_url": {"url": "https://your-public-assets.example/scene.jpg"}}
+    {"type": "text", "text": "The camera moves smoothly from the opening scene to the final scene"},
+    {"type": "image_url", "image_url": {"url": "https://your-public-assets.example/start.jpg"}, "role": "first_frame"},
+    {"type": "image_url", "image_url": {"url": "https://your-public-assets.example/end.jpg"}, "role": "last_frame"}
   ],
   "duration": 5,
-  "resolution": "768p"
+  "resolution": "768P",
+  "ratio": "16:9"
 }
 ```
 
-示例图片域名是占位符，需要替换成真实可访问的地址。需要登录、短期过期、只允许内网访问或禁止供应商下载的图片地址可能导致异步生成失败。
+### 参考素材：图片、视频与音频
+
+参考素材方式可组合不同类型的素材；不要与首帧/尾帧混用：
+
+```json
+{
+  "model": "MiniMax-H3",
+  "content": [
+    {"type": "text", "text": "Create a product film using the supplied appearance, motion and sound references"},
+    {"type": "image_url", "image_url": {"url": "https://your-public-assets.example/product.jpg"}, "role": "reference_image"},
+    {"type": "video_url", "video_url": {"url": "https://your-public-assets.example/motion.mp4"}, "role": "reference_video"},
+    {"type": "audio_url", "audio_url": {"url": "https://your-public-assets.example/sound.mp3"}, "role": "reference_audio"}
+  ],
+  "duration": 10,
+  "resolution": "768P",
+  "ratio": "16:9"
+}
+```
+
+以上素材域名均为占位符，必须替换成真实可访问的地址。参考音频输入不表示支持额外的 `generate_audio` 开关。文本加音频可以作为输入，但没有图片或视频时不能使用 `ratio: "adaptive"`。
 
 ### 查询进度、读取错误与下载
 
@@ -161,26 +199,40 @@ curl --fail-with-body "$GATEWAY/v1/videos/$TASK_ID" \
   "request_id": "mmv_example_task_id",
   "status": "done",
   "model": "MiniMax-H3",
-  "created_at": "2026-11-11T02:00:00Z",
-  "completed_at": "2026-11-11T02:02:20Z",
-  "upstream_id": "provider_task_reference",
+  "created_at": "2026-11-12T02:00:00Z",
+  "completed_at": "2026-11-12T02:02:20Z",
   "duration": 5,
-  "resolution": "768p",
-  "output_resolution": "768p",
+  "resolution": "768P",
+  "output_resolution": "768P",
+  "ratio": "16:9",
   "video": {"url": "/v1/videos/mmv_example_task_id/content"},
-  "usage": {"upstream_cost_usd": 0.375}
+  "usage": {"output_seconds": 5}
 }
 ```
 
 | 字段 | 含义 / 注意 |
 |---|---|
-| `upstream_id` | 供应商任务引用，用于排错；不要替代网关 `id` 去调用网关 |
-| `duration` | 记录的视频秒数 |
-| `resolution`、`output_resolution` | 输出规格；计费档位可能由分组映射 |
+| `duration` | 记录的视频秒数；实际输出用量以 `usage.output_seconds` 为准 |
+| `resolution`、`output_resolution` | 输出规格 |
+| `ratio` | 视频宽高比；以实际返回字段为准 |
 | `video.url` | 本站受保护的下载路径，通常是相对路径，需要相同 API Key |
-| `usage.upstream_cost_usd` | 供应商报告的成本，不等于最终用户扣费；无可用成本时可能省略 |
+| `usage.output_seconds` | 实际报告的输出秒数；尚未取得时省略，不能用等待时间估算 |
 | `error.message` | 失败说明；只在失败或异常状态存在 |
 | `completed_at` | 完成/失败时间 |
+
+部分历史任务可能返回 `usage.upstream_cost_usd`。它不是用户售价；字段缺失不表示免费，实际扣费以控制台账单为准。
+
+异步失败时，查询仍可能返回 HTTP 200，例如：
+
+```json
+{
+  "id": "mmv_example_task_id",
+  "status": "error",
+  "error": {"message": "Video generation failed", "type": "upstream_error"}
+}
+```
+
+错误文本可能经过整理，请保留任务 ID 和错误类型以便排查，不要依赖固定英文消息判断业务状态。
 
 ```bash
 curl --fail-with-body "$GATEWAY/v1/videos/$TASK_ID/content" \
@@ -514,21 +566,20 @@ console.log('Saved', provider + '.mp4');
 
 ## 计费、任务查询与日志 {#video-billing}
 
-### 三种计费模式
+### 单价、用量与最终费用
 
 计费方式和单价以控制台显示为准，不能通过请求参数自行修改。以下金额只用于解释公式，不是当前报价。
 
-| 模式 | 用途 | 计算方式 |
+| 计费方式 | 常见模型 | 计算方式 |
 |---|---|---|
-| `local_price` | 明确按视频秒数定价 | 模型/分辨率的每秒单价 × 输出秒数 × 有效倍率 |
-| `upstream_cost` | 按供应商实际报告成本计价 | 供应商实际报告的美元成本 × 有效倍率；必须确实能取得成本 |
-| `usage_tokens` | Seedance 实际用量计费 | 供应商实际 Token 数 × 接单时的 Token 单价 × 有效倍率 |
+| 按秒 | MiniMax H3；部分 Seedance 服务 | 实际输出秒数 × 适用的每秒价格 |
+| 按 Token | Seedance | 实际输入/输出 Token 分别乘以适用单价后相加；每百万 Token 报价需先除以 1,000,000 |
 
-MiniMax H3 不使用 `usage_tokens`。Seedance 的 `usage.completion_tokens` 是用量，不是美元金额；最终扣费请查看“扣费记录”。如果接口中的成本字段缺失，或任务显示“待结算”，都不能据此判断本次免费。
+若控制台另列适用倍率或其他计费方式，以该服务接单时的价格说明为准。H3 的 `usage.output_seconds` 和 Seedance 的 `usage.completion_tokens` 都是用量，不是美元金额；最终扣费请查看“扣费记录”。用量字段缺失或任务显示“待结算”，都不能据此判断本次免费。
 
 按百万 Token 定价时，要注意单位换算。例如输出价 **2 美元 / 100 万 Token**、实际输出 **100,000 Token**、倍率 **1**，则金额为 `100000 / 1000000 × 2 × 1 = 0.20 美元`。这只是算式示例，并非 Seedance 官方报价。
 
-H3 示例：分组 720p 档秒价 **0.10 美元**，768p 映射到 720p 档，实际时长 5 秒、倍率 1，则用户费用为 **0.50 美元**。供应商成本即使是 0.375 美元，也不会在本地定价模式下自动替换用户费用。
+H3 示例：适用单价 **0.10 美元/秒**，实际时长 5 秒，则费用为 **0.50 美元**。这是计算示例，不是当前报价。账单可能将 768p 归入 720p 价格档；视频输出仍为 768p。
 
 任务按接单时适用的价格计费，之后调价不会重新计算已接受的任务。是否免费以控制台明确标注和最终结算结果为准。
 
@@ -537,7 +588,7 @@ H3 示例：分组 720p 档秒价 **0.10 美元**，768p 映射到 720p 档，�
 ### 何时扣款、失败与重复查询
 
 - 创建任务前，请确认权限、余额或订阅额度，以及 API Key 的额度和并发限制。未完成的任务会占用可用额度或并发名额。
-- 按 Token 或上游成本计费时，最终金额需要等待实际用量返回，可能高于预估。请保留足够余额并控制同时创建的任务数量。
+- 最终金额需要等待实际用量返回，可能高于预估。请保留足够余额并控制同时创建的任务数量。
 - 生成成功后结算。一个任务使用余额或订阅中的一种付款来源，不会同时扣两边。
 - 重复查询或刷新页面不会对同一任务重复扣款。
 - 生成失败不扣成功生成费用。创建响应超时或丢失时，请先到任务页核对，不要通过重复 POST 找回原任务。
@@ -600,7 +651,7 @@ Seedance 默认任务有效期为 48 小时。客户端停止等待不等于任�
 
 | HTTP 状态 | 常见原因 | 处理方式 |
 |---|---|---|
-| 400 | JSON、模型、时长、分辨率、内容或计费参数不合法 | 修正参数；H3 使用 768p；按秒模式明确时长与档位 |
+| 400 | JSON、模型、时长、分辨率、内容或参数组合不合法 | H3 使用 1–15 秒、768P/p；检查输入方式、媒体角色和宽高比 |
 | 401 | API Key / 面板登录无效、缺少认证 | 核对环境与认证类型；不要将 Key 放在 URL 参数中 |
 | 402 / 403 | 余额、订阅、额度、分组权限或安全审核不允许 | 查看具体错误；补足额度或联系支持核对权限 |
 | 404 | 路径错误，或任务不存在/已删除/归属不符 | 使用创建响应 ID 和原 API Key；不要用供应商 ID 替代 |
@@ -623,7 +674,7 @@ Seedance 默认任务有效期为 48 小时。客户端停止等待不等于任�
 
 ### 常见疑问
 
-**为什么 H3 请求 768p，账单写 720p 档？** 输出规格和价格档位是两件事。768p 默认按分组 720p 价格档计费，不会把输出改成 720p。
+**为什么 H3 请求 768p，账单写 720p 档？** 输出规格和价格档位是两件事。768p 默认对应 720p 价格档，不会把输出改成 720p。
 
 **为什么同样 5 秒的 Seedance 视频费用不一样？** 实际 Token 模式依据供应商用量，模型、分辨率、输出和供应商最低计费规则都可能影响用量；5 秒不能直接换算成固定 Token。
 
@@ -645,4 +696,4 @@ Seedance 默认任务有效期为 48 小时。客户端停止等待不等于任�
 - [BytePlus 查询视频任务官方文档](https://docs.byteplus.com/en/docs/modelark/get-video-generation-task-api)：原生状态、输出和实际 Token 用量。
 - 本站查询/下载/删除和计费语义以本文及控制台实际开放能力为准；特别是 `sdv_` ID、后台结算与删除记录语义，属于本网关提供的能力。
 
-文档参数核对日期：2026-11-11。供应商会更新模型和限制，实际开通能力以对应模型官方说明、你的可用模型及对应服务说明为准。
+文档参数核对日期：2026-11-12。模型和限制可能更新，实际开通能力以你的可用模型及对应服务说明为准。

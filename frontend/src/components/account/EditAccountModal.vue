@@ -2210,6 +2210,15 @@
           </div>
           <p class="input-hint">{{ t('admin.accounts.openai.endpointCapabilitiesDesc') }}</p>
         </div>
+        <div v-if="openAIEndpointCapabilities.includes('minimax_video')" class="space-y-2" data-testid="minimax-video-protocol-settings">
+          <label class="input-label" for="edit-minimax-video-protocol">{{ t('admin.accounts.minimaxVideo.protocol') }}</label>
+          <select id="edit-minimax-video-protocol" :value="minimaxVideoProtocol" class="input" data-testid="minimax-video-protocol" @change="changeMinimaxVideoProtocol">
+            <option value="ll2">{{ t('admin.accounts.minimaxVideo.ll2') }}</option>
+            <option value="getoken">{{ t('admin.accounts.minimaxVideo.getoken') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.minimaxVideo.protocolChangeHint') }}</p>
+          <p v-if="minimaxVideoProtocol === 'll2'" class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.accounts.minimaxVideo.ll2BillingHint') }}</p>
+        </div>
       </div>
 
       <!-- OpenAI APIKey images: backfill b64_json from url -->
@@ -3421,6 +3430,7 @@
 
 <script setup lang="ts">
 import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, readOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
+import { applyMinimaxVideoProtocol, minimaxVideoProtocolBaseURL, readMinimaxVideoProtocol, type MinimaxVideoProtocol } from './minimaxVideoProtocol'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4205,6 +4215,8 @@ const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
+const minimaxVideoProtocol = ref<MinimaxVideoProtocol>('getoken')
+const minimaxVideoProtocolChanged = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
@@ -4398,12 +4410,22 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 }
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
+  applyMinimaxVideoProtocol(credentials, openAIEndpointCapabilities.value.includes('minimax_video'), minimaxVideoProtocol.value, minimaxVideoProtocolChanged.value)
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
   if (isDefaultOpenAIEndpointCapabilities(capabilities)) {
     delete credentials.openai_capabilities
     return
   }
   credentials.openai_capabilities = capabilities
+}
+
+function changeMinimaxVideoProtocol(event: Event) {
+  const protocol = (event.target as HTMLSelectElement).value as MinimaxVideoProtocol
+  if (protocol === minimaxVideoProtocol.value) return
+  minimaxVideoProtocol.value = protocol
+  minimaxVideoProtocolChanged.value = true
+  editApiKey.value = ''
+  editBaseUrl.value = minimaxVideoProtocolBaseURL(protocol, editBaseUrl.value)
 }
 const normalizeOpenAIResponsesMode = (mode: unknown): OpenAIResponsesMode => {
   if (mode === 'force_responses' || mode === 'force_chat_completions') {
@@ -4680,6 +4702,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+  minimaxVideoProtocol.value = readMinimaxVideoProtocol(newAccount.credentials as Record<string, unknown> | undefined)
+  minimaxVideoProtocolChanged.value = false
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -5749,7 +5773,7 @@ const handleSubmit = async () => {
       // 若后端尚未升级（无 credentials_status），回退读旧结构 currentCredentials.api_key。
       // 两者都无才报错。
       const hasExistingApiKey =
-        props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key)
+        !minimaxVideoProtocolChanged.value && (props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key))
       if (editApiKey.value.trim()) {
         newCredentials.api_key = editApiKey.value.trim()
       } else if (!hasExistingApiKey) {

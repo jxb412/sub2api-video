@@ -1,5 +1,12 @@
 export default {
     accounts: {
+      minimaxVideo: {
+        protocol: 'MiniMax H3 upstream protocol',
+        ll2: 'LL2',
+        getoken: 'Getoken compatible',
+        protocolChangeHint: 'Changing protocol clears the API key. Enter a key for the selected provider and verify the Base URL; custom URL paths are preserved.',
+        ll2BillingHint: 'LL2 does not report an actual USD cost. Configure a local price per second for MiniMax-H3 in the group; upstream-cost billing is unavailable.',
+      },
       title: 'Account Management',
       description: 'Manage AI platform accounts and credentials',
       createAccount: 'Create Account',

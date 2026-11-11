@@ -17,11 +17,15 @@ import (
 
 // MinimaxVideoRequestURL applies the same operator URL policy as other providers.
 func (s *OpenAIGatewayService) MinimaxVideoRequestURL(account *Account) (string, error) {
-	base, err := s.validateUpstreamBaseURL(MinimaxVideoBaseURL(account))
+	protocol, err := MinimaxVideoProtocol(account)
 	if err != nil {
 		return "", err
 	}
-	return BuildMinimaxVideoURL(base, MinimaxVideoEndpointCreate, "")
+	base, err := s.validateUpstreamBaseURL(minimaxProtocolBaseURL(account, protocol))
+	if err != nil {
+		return "", err
+	}
+	return buildMinimaxProtocolURL(protocol, base, MinimaxVideoEndpointCreate, "")
 }
 
 func minimaxVideoSameOrigin(a, b *url.URL) bool {
@@ -107,24 +111,45 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	if s == nil || c == nil || task == nil || strings.TrimSpace(task.VideoURL) == "" {
 		return fmt.Errorf("video content is unavailable")
 	}
+	if task.UpstreamBaseURL != "" {
+		baseURL = task.UpstreamBaseURL
+	}
+	if task.UpstreamProtocol == MinimaxVideoProtocolLL2 {
+		// LL2 publishes public video URLs. Never attach its API key, even to its own origin.
+		token = ""
+	} else if task.Provider != VideoProviderSeedance && task.AccountID > 0 {
+		account, boundBase, err := s.minimaxBoundTaskAccount(c.Request.Context(), task)
+		if err != nil {
+			return err
+		}
+		baseURL, token = boundBase, account.GetCredential("api_key")
+	}
+	ll2 := task.UpstreamProtocol == MinimaxVideoProtocolLL2
+	if ll2 {
+		if err := validateLL2MinimaxPublicHTTPSURL(task.VideoURL); err != nil {
+			return err
+		}
+	}
 	target, origin, err := s.minimaxVideoContentURL(task.VideoURL, baseURL)
 	if err != nil {
 		return err
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialContext = minimaxVideoContentDialer(origin, s.cfg != nil && s.cfg.Security.URLAllowlist.AllowPrivateHosts)
+	transport.DialContext = minimaxVideoContentDialer(origin, !ll2 && s.cfg != nil && s.cfg.Security.URLAllowlist.AllowPrivateHosts)
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: 10 * time.Minute, Transport: transport}
 	authenticate := func(req *http.Request) {
-		req.Header.Del("Authorization")
-		if minimaxVideoSameOrigin(req.URL, origin) && strings.TrimSpace(token) != "" {
-			req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
-		}
+		setMinimaxVideoDownloadAuthorization(req, origin, token, ll2)
 	}
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 {
 			return fmt.Errorf("too many video redirects")
+		}
+		if ll2 {
+			if err := validateLL2MinimaxPublicHTTPSURL(req.URL.String()); err != nil {
+				return err
+			}
 		}
 		if err := s.validateMinimaxVideoContentURL(req.URL, origin); err != nil {
 			return err
@@ -159,4 +184,11 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	c.Status(http.StatusOK)
 	_, err = io.Copy(c.Writer, resp.Body)
 	return err
+}
+
+func setMinimaxVideoDownloadAuthorization(req *http.Request, origin *url.URL, token string, public bool) {
+	req.Header.Del("Authorization")
+	if !public && minimaxVideoSameOrigin(req.URL, origin) && strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	}
 }

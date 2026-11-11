@@ -158,6 +158,9 @@ func (s *OpenAIGatewayService) settleMinimaxVideoTask(ctx context.Context, task 
 	if s == nil || task.Status != MinimaxVideoStatusDone || task.VideoURL == "" {
 		return settlement, fmt.Errorf("video is not complete")
 	}
+	if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && (!task.OutputSecondsReported || task.DurationSeconds != task.RequestedDurationSeconds || task.BillingMode != VideoBillingModeLocalPrice) {
+		return settlement, fmt.Errorf("LL2 final output seconds or local pricing unavailable/inconsistent; settlement pending")
+	}
 	if task.BillingMode == VideoBillingModeUsageTokens && (!task.TokenPricingConfigured || !task.UsageReported) {
 		return settlement, fmt.Errorf("Seedance token price or final usage is unavailable; settlement pending")
 	}

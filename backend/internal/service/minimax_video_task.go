@@ -125,6 +125,10 @@ func ExecuteMinimaxVideoTask(ctx context.Context, client *http.Client, targetURL
 }
 
 func requestMinimaxVideo(ctx context.Context, method, targetURL, bearerToken string, body []byte, account *Account, do func(*http.Request) (*http.Response, error)) (MinimaxVideoTask, error) {
+	return requestMinimaxVideoProtocol(ctx, method, targetURL, bearerToken, body, account, "getoken", "", do)
+}
+
+func requestMinimaxVideoProtocol(ctx context.Context, method, targetURL, bearerToken string, body []byte, account *Account, protocol, idempotencyKey string, do func(*http.Request) (*http.Response, error)) (MinimaxVideoTask, error) {
 	var task MinimaxVideoTask
 	req, err := http.NewRequestWithContext(ctx, method, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -137,6 +141,21 @@ func requestMinimaxVideo(ctx context.Context, method, targetURL, bearerToken str
 	}
 	if account != nil {
 		account.ApplyHeaderOverrides(req.Header)
+	}
+	if protocol == MinimaxVideoProtocolLL2 {
+		for name := range req.Header {
+			if strings.EqualFold(name, "Authorization") || strings.EqualFold(name, "Idempotency-Key") {
+				delete(req.Header, name)
+			}
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearerToken))
+		req.Header.Del("Idempotency-Key")
+		if method == http.MethodPost {
+			if idempotencyKey == "" {
+				return task, fmt.Errorf("LL2 video submission requires an idempotency key")
+			}
+			req.Header.Set("Idempotency-Key", idempotencyKey)
+		}
 	}
 	resp, err := do(req)
 	if err != nil {
@@ -153,7 +172,12 @@ func requestMinimaxVideo(ctx context.Context, method, targetURL, bearerToken str
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return task, &MinimaxVideoUpstreamError{StatusCode: resp.StatusCode, Body: payload}
 	}
-	parsed, err := ParseMinimaxVideoUpstreamResponse(payload)
+	var parsed MinimaxVideoTask
+	if protocol == MinimaxVideoProtocolLL2 {
+		parsed, err = ParseLL2MinimaxVideoUpstreamResponse(payload)
+	} else {
+		parsed, err = ParseMinimaxVideoUpstreamResponse(payload)
+	}
 	if err != nil {
 		return task, err
 	}
@@ -175,6 +199,10 @@ func requestMinimaxVideo(ctx context.Context, method, targetURL, bearerToken str
 // Use the same account transport as other gateway calls, including proxy and
 // operator header overrides. Credentials are loaded anew before every poll.
 func (s *OpenAIGatewayService) callMinimaxVideo(ctx context.Context, account *Account, method, target string, body []byte) (MinimaxVideoTask, error) {
+	return s.callMinimaxVideoProtocol(ctx, account, MinimaxVideoProtocolGetoken, method, target, body, "")
+}
+
+func (s *OpenAIGatewayService) callMinimaxVideoProtocol(ctx context.Context, account *Account, protocol, method, target string, body []byte, idempotencyKey string) (MinimaxVideoTask, error) {
 	if account == nil || strings.TrimSpace(account.GetCredential("api_key")) == "" {
 		return MinimaxVideoTask{}, fmt.Errorf("minimax video account credential unavailable")
 	}
@@ -192,7 +220,7 @@ func (s *OpenAIGatewayService) callMinimaxVideo(ctx context.Context, account *Ac
 			return s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
 		}
 	}
-	return requestMinimaxVideo(ctx, method, target, account.GetCredential("api_key"), body, account, do)
+	return requestMinimaxVideoProtocol(ctx, method, target, account.GetCredential("api_key"), body, account, protocol, idempotencyKey, do)
 }
 
 // MinimaxVideoUpstreamError carries the upstream status and body so handlers can
@@ -236,6 +264,9 @@ func MinimaxVideoTaskStatusBody(task MinimaxVideoTask, contentPath string) []byt
 		out["resolution"] = task.Resolution
 		out["output_resolution"] = task.Resolution
 	}
+	if task.Ratio != "" {
+		out["ratio"] = task.Ratio
+	}
 	if task.Status == MinimaxVideoStatusDone && contentPath != "" {
 		out["video"] = map[string]any{"url": contentPath}
 	}
@@ -244,6 +275,8 @@ func MinimaxVideoTaskStatusBody(task MinimaxVideoTask, contentPath string) []byt
 	}
 	if task.UpstreamCostReported || task.UpstreamCostUSD > 0 {
 		out["usage"] = map[string]any{"upstream_cost_usd": task.UpstreamCostUSD}
+	} else if task.OutputSecondsReported {
+		out["usage"] = map[string]any{"output_seconds": task.DurationSeconds}
 	}
 	if task.CompletedAt != "" {
 		out["completed_at"] = task.CompletedAt
@@ -297,7 +330,7 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 	// durable state so an operator's terminal decision cannot be overwritten.
 	workCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
-	account, base, runErr := s.minimaxTaskAccount(workCtx, task.AccountID)
+	account, base, runErr := s.minimaxBoundTaskAccount(workCtx, task)
 	var result MinimaxVideoTask
 	if runErr == nil {
 		targetURL, runErr = BuildMinimaxVideoURL(base, MinimaxVideoEndpointCreate, "")
@@ -394,7 +427,7 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 	}
 	// Account loading can use the shared pool. Complete it before holding the
 	// session-lock connection, so polling works even with a one-connection pool.
-	account, base, err := s.minimaxTaskAccount(ctx, task.AccountID)
+	account, base, err := s.minimaxBoundTaskAccount(ctx, task)
 	if err != nil {
 		// Missing/deleted accounts must not permanently monopolize the oldest
 		// recovery batch. No lock connection is held while rotating this attempt.
@@ -423,6 +456,7 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 		})
 	}
 	defer releaseLock()
+	boundProtocol, boundHash := task.UpstreamProtocol, task.UpstreamCredentialHash
 	fresh, err := loadMinimaxVideoTaskWithQueryer(ctx, conn, task.ID, task.UserID, task.APIKeyID)
 	if err != nil {
 		return err
@@ -432,8 +466,14 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 		return nil
 	}
 	*task = *fresh
+	if task.UpstreamProtocol != boundProtocol || task.UpstreamCredentialHash != boundHash {
+		return fmt.Errorf("video protocol or credential snapshot changed during poll")
+	}
 	if task.AccountID != account.ID {
 		return fmt.Errorf("video task account changed during poll")
+	}
+	if task.UpstreamBaseURL != "" && task.UpstreamBaseURL != base {
+		return fmt.Errorf("video endpoint snapshot changed during poll")
 	}
 	wasDone := task.Status == MinimaxVideoStatusDone
 	if task.IsTerminal() && (!wasDone || !videoTaskNeedsProviderMetadata(*task)) {
@@ -452,13 +492,13 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 			return err
 		}
 	}
-	target, err := BuildMinimaxVideoURL(base, MinimaxVideoEndpointStatus, task.UpstreamID)
+	target, err := buildMinimaxProtocolURL(task.UpstreamProtocol, base, MinimaxVideoEndpointStatus, task.UpstreamID)
 	if err != nil {
 		return err
 	}
 	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	result, err := s.callMinimaxVideo(pollCtx, account, http.MethodGet, target, nil)
+	result, err := s.callMinimaxVideoProtocol(pollCtx, account, task.UpstreamProtocol, http.MethodGet, target, nil, "")
 	if err != nil {
 		return err
 	}
@@ -469,6 +509,9 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 		return fmt.Errorf("minimax poll returned a different task ID")
 	}
 	if result.Status == MinimaxVideoStatusDone {
+		if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && result.OutputSecondsReported && result.DurationSeconds != task.RequestedDurationSeconds {
+			return fmt.Errorf("LL2 returned output seconds inconsistent with the submitted duration")
+		}
 		if err := s.validateMinimaxCompletedResult(result, base); err != nil {
 			return err
 		}
@@ -485,6 +528,10 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 		}
 		if !task.UsageReported && result.UsageReported {
 			task.InputTokens, task.OutputTokens, task.UsageReported = result.InputTokens, result.OutputTokens, true
+		}
+		if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && result.OutputSecondsReported {
+			task.OutputSecondsReported = true
+			task.DurationSeconds = result.DurationSeconds
 		}
 		payload, err := json.Marshal(task)
 		if err != nil {
@@ -539,4 +586,37 @@ func (s *OpenAIGatewayService) MinimaxVideoAccountCredentials(ctx context.Contex
 		base = DefaultGetokenBaseURL
 	}
 	return base, strings.TrimSpace(account.GetCredential("api_key"))
+}
+
+// RunLL2MinimaxVideoWorker submits idempotently, then polls without tying its life
+// to the client's create request. Recovery resumes known tasks after shutdown.
+func (s *OpenAIGatewayService) RunLL2MinimaxVideoWorker(ctx context.Context, taskID string, userID, apiKeyID int64) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("minimax_video.ll2_worker_panic", "task_id", taskID, "panic", r)
+		}
+	}()
+	if err := s.RunLL2MinimaxVideoTask(ctx, taskID, userID, apiKeyID); err != nil {
+		slog.Warn("minimax_video.ll2_submission_pending", "task_id", taskID, "error", err)
+		return
+	}
+	task, err := s.LoadMinimaxVideoTask(ctx, taskID, userID, apiKeyID)
+	if err != nil || task == nil || task.IsTerminal() || task.UpstreamID == "" {
+		return
+	}
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if err := s.PollMinimaxVideoTask(ctx, task); err != nil {
+			slog.Warn("minimax_video.poll_retry_pending", "task_id", taskID, "error", err)
+		}
+		if task.IsTerminal() {
+			return
+		}
+	}
 }

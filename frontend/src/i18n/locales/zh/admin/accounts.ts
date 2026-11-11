@@ -1,5 +1,12 @@
 export default {
     accounts: {
+      minimaxVideo: {
+        protocol: 'MiniMax H3 上游协议',
+        ll2: 'LL2',
+        getoken: 'Getoken 兼容',
+        protocolChangeHint: '切换协议会清空 API Key。请重新填写对应供应商的密钥并确认 Base URL；自定义 URL 路径会保留。',
+        ll2BillingHint: 'LL2 不回传实际美元成本。请在分组中为 MiniMax-H3 配置本地每秒单价，不支持跟随上游成本计费。',
+      },
       title: '账号管理',
       description: '管理 AI 平台账号和 Cookie',
       createAccount: '添加账号',

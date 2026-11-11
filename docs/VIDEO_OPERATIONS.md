@@ -1,11 +1,33 @@
-# Video operations (0.5.2)
+# Video operations (2026-11-12)
 
 MiniMax H3 uses an asynchronous gateway bridge: `POST /v1/videos/generations`,
 `GET /v1/videos/{id}`, and `GET /v1/videos/{id}/content`. The create response
-contains a gateway `mmv_` task ID. The relay account needs an API key, a custom
-base URL, model mapping, and the explicit `minimax_video` capability. Enable
-media generation for the group. H3 defaults to 5 seconds at 768p; unsupported
-H3 resolutions are rejected before upstream submission.
+contains a gateway `mmv_` task ID. The relay account needs an API key, an explicit
+protocol, base URL, model mapping, and the `minimax_video` capability. Enable
+media generation for the group. New H3 accounts default to LL2 at
+`https://api.ll2.cn`, using upstream `POST /v2/video_generation` and
+`GET /v2/query/video_generation/{provider_id}`. These supplier endpoints and
+credentials belong in operator configuration; clients continue to use the
+gateway routes and their gateway API keys.
+
+`credentials.minimax_video_protocol` selects `ll2` or `getoken`; an absent or
+empty value retains legacy Getoken behavior. Never infer protocol from the
+hostname. Add a separate LL2 account and retain the old account until its tasks
+finish and settle. Explicit protocol changes require a fresh key in the panel;
+metadata-only edits preserve legacy settings. Custom proxy path prefixes are
+preserved; LL2 URL construction removes only a trailing `/v1` or `/v2` before
+adding the protocol path. Verify the proxy actually implements these endpoints.
+
+LL2 H3 accepts 1–15 seconds, defaults to 5 seconds, accepts only 768p/768P, and
+defaults to ratio 16:9. Other ratios are 21:9, 4:3, 1:1, 3:4, 9:16 and adaptive;
+adaptive requires an image or video. Content requires exactly one text item of
+1–7000 characters, plus up to 12 media items. First/last frames cannot mix with
+reference images, videos or audio. References permit up to 9 images, 3 videos
+and 3 audio clips within the combined limit. Simple prompt/image_url input and
+content input are mutually exclusive. Media URLs must be public HTTPS; local
+moderation covers text and images, not decoded video or audio. Parameter and
+role validation happens before submission; supplier media-format limits still
+require real-account acceptance.
 
 Group settings `video_billing_mode` (`local_price`, `upstream_cost`, or
 Seedance-only `usage_tokens`) and
@@ -14,6 +36,8 @@ snapshots. The panel supports both create and edit. Explicit group settings
 override environment defaults. 768p maps to the 720p pricing tier unless
 overridden. Model prices override the group's resolution price. Independent
 video multipliers and per-user group overrides use existing gateway semantics.
+LL2 requires `local_price` with an explicitly configured seconds price and
+rejects `upstream_cost` and `usage_tokens`. It does not report actual USD cost.
 The mode, price, payer and multiplier are fixed when the task is accepted.
 Known local charges reserve balance, API key and subscription headroom before
 submission. A PostgreSQL admission transaction locks the user/account and fresh
@@ -28,8 +52,14 @@ normal gateway traffic while the worker is alive.
 This is not a universal dollar cap: token/upstream-cost amounts are estimates
 until the provider returns final usage, and actual fees can exceed an estimate.
 Account dollar quotas use provider cost (or token base cost), not the user's
-local sale price; existing scheduler checks of recorded account usage remain
-in place, without new durable account-dollar holds. Ordinary chat/image
+local sale price. LL2 actual cost is unreported, so its account dollar usage
+cannot be accumulated precisely from this API. LL2 accounts with enabled
+monetary account quotas are rejected before submission; manage procurement
+budgets in the supplier console. User balance, subscription and API-key quotas
+still use the configured sale price. Any future purchase estimate must be
+explicitly labelled as an estimate, not actual cost. Existing scheduler checks
+of recorded account usage remain in place, without new durable account-dollar
+holds. Ordinary chat/image
 admission does not read video-task holds from PostgreSQL; after Redis reservation
 loss, ordinary traffic and videos do not have a shared durable reservation pool.
 Use conservative account concurrency, adequate balance and provider-side limits,
@@ -45,9 +75,21 @@ retain the official nontransactional cache update path: a crash immediately
 after ledger commit may omit that secondary statistic. Transactional balance,
 subscription and API-key ledger effects are unaffected.
 
-With MiniMax-H3 configured at USD 0.10/second for 720p and multiplier 1, a
-5-second 768p task costs the user USD 0.50. The provider's reported USD 0.375
-cost is stored separately. Explicit zero prices/multipliers remain valid.
+When a verified purchase baseline of `p` USD/second is entered as the local
+price, an effective multiplier of 1.2 sells at `p * 1.2` USD/second. For an
+illustrative `p = 0.075` and 5 output seconds, the configured baseline is
+USD 0.375 and the user pays USD 0.45. This is 20% markup on the baseline and
+16.67% gross margin on sales, assuming the baseline equals actual cost and
+ignoring other expenses. It is not 20% gross margin. These amounts are examples,
+not verified LL2 tariffs or invoices. Unknown actual cost stays unreported; do
+not derive supplier cost or profit from local prices. Explicit zero prices and
+multipliers remain valid.
+
+LL2 settlement requires reported `usage.output_seconds` consistent with the
+submitted duration. Missing or inconsistent seconds remain pending for further
+polling/reconciliation; elapsed generation time and requested duration cannot
+stand in for actual reported usage. Downloads may be available before billing
+has completed. Legacy Getoken costs are recorded only when actually supplied.
 
 Migration 343 adds a durable task snapshot and settlement timestamp. Migration
 344 widens `video_tasks.upstream_cost_usd` and `billed_cost_usd` to NUMERIC(20,8),
@@ -62,12 +104,39 @@ tasks are not charged. Completed charges cannot be erased by marking a task
 failed in the admin panel.
 
 The recovery worker starts through Wire and checks every minute for incomplete
-settlements. Redis loss does not remove task history or billing inputs. MiniMax
-tasks still pending after the 20-minute upstream deadline plus 5-minute grace are
-marked interrupted. Upstream create calls are never replayed automatically
-after a crash. A process crash before a blocking provider returns may require
-manual reconciliation with the provider. Legacy rows without a billing
+settlements and recoverable tasks. Redis loss does not remove task history or
+billing inputs. The missing-ID 25-minute interruption rule applies to legacy
+Getoken and interrupted Seedance creation, not LL2. Getoken uses a blocking
+create with a 20-minute deadline and 5-minute grace; an unknown result after a
+crash requires reconciliation rather than blind resubmission. Known provider
+IDs are queried without creating another task. Legacy rows without a billing
 snapshot are not charged retroactively.
+
+LL2 stores the exact upstream request bytes, protocol, normalized base URL and
+a SHA-256 identity of the API key and effective custom headers in the task
+snapshot. It does not copy the raw key into the task snapshot. Submission
+intent is saved before the outbound POST under a PostgreSQL advisory lock.
+The upstream `Idempotency-Key` is the gateway task ID; configured header
+overrides cannot replace this key or LL2 bearer authorization. On an ambiguous
+create result, recovery reuses the same bytes, key and bound account identity
+for at most 24 hours from admission, or an earlier stored expiry. Each attempt
+has a bounded request timeout. A saved provider ID ends submission recovery;
+subsequent recovery only polls that ID.
+
+Protocol, URL or credential/header changes on the bound account stop recovery
+and polling until the original configuration is restored. Do not mutate the
+saved request or rotate its idempotency key to recover a task. An uncertain
+submission keeps its durable reservation, including after its retry window
+expires. Expiry only stops automatic creation attempts; it does not prove that
+the provider cancelled or rejected the original request. Reconcile the original
+task with supplier records before resolving the hold. A rejection following an
+earlier ambiguous attempt also does not prove that the first request failed.
+The 24-hour submission window does not expire known-ID polling.
+
+The billing ledger deduplicates by gateway task ID and API key. Repeated polls,
+recovery and settlement retries cannot debit the main balance/subscription/API
+key quotas twice. Do not manually mark an unresolved task failed or settled to
+bypass a reservation; first establish its provider outcome and ledger state.
 
 Downloads require the owner's API key or panel session. Provider authorization
 is sent only to the configured provider origin, including across redirects;
@@ -99,7 +168,7 @@ Missing usage/cost metadata remains unsettled and is queried again; missing
 provider cost must not be interpreted as zero or used to fabricate profit.
 
 Known-ID Seedance recovery follows `execution_expires_after` rather than the
-MiniMax 25-minute interruption rule: default 172800 seconds, allowed range
+legacy missing-ID 25-minute interruption rule: default 172800 seconds, allowed range
 3600–259200. A missing provider ID after interrupted create is never replayed
 blindly. Prolonged provider failures beyond expiry can end local waiting with
 an explicit reconciliation error; this does not confirm upstream cancellation.
@@ -117,10 +186,12 @@ Individual models may support fewer input types. Current explicit resolution val
 and 1080p. Input support and provider-specific limits require a real account
 check, not just a successful mocked protocol test.
 
-See [VIDEO_API_GUIDE.md](VIDEO_API_GUIDE.md) for complete Chinese client/admin
-instructions, request/response fields, curl/Python/Node.js examples, billing,
-ownership and retry behavior. Website publication does not deploy production;
-new 0.5.2 functionality is first accepted on the designated test environment.
+See [VIDEO_API_GUIDE.md](VIDEO_API_GUIDE.md) for Chinese client instructions,
+request/response fields, curl/Python/Node.js examples, billing, ownership and
+retry behavior. Supplier setup and pricing belong in
+[VIDEO_ADMIN_GUIDE.md](VIDEO_ADMIN_GUIDE.md). Local documentation edits do not
+publish the website or deploy production; accept new behavior on the designated
+test environment and record the exact commit and image used.
 
 PR Wei-Shaw/sub2api#8622 is included: recognized Codex Desktop page-context
 outputs are normalized before Responses tool validation. Unrelated malformed

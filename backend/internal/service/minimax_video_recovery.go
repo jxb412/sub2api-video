@@ -43,7 +43,7 @@ func (s *OpenAIGatewayService) recoverMinimaxVideoTasks(ctx context.Context, inv
 	// racing an active request in another replica. Old rows are repaired too.
 	if _, err := db.ExecContext(ctx, `UPDATE video_tasks SET status='error',
 		error_message='Video generation interrupted or timed out', completed_at=now()
-		WHERE status IN ('queued','processing') AND
+		WHERE status IN ('queued','processing') AND COALESCE(task_snapshot->>'upstream_protocol','')<>'ll2' AND
 		((provider <> 'seedance' AND upstream_id='' AND created_at < now()-interval '25 minutes') OR
 		 (provider='seedance' AND upstream_id='' AND created_at < now()-interval '25 minutes'))`); err != nil {
 		return err
@@ -97,8 +97,11 @@ func (s *OpenAIGatewayService) recoverMinimaxVideoTasks(ctx context.Context, inv
 
 func (s *OpenAIGatewayService) recoverKnownMinimaxVideoTasks(ctx context.Context, invalidators ...APIKeyAuthCacheInvalidator) error {
 	rows, err := videoTaskHandle().QueryContext(ctx, `SELECT task_id,user_id,api_key_id FROM video_tasks
-		WHERE provider='minimax' AND upstream_id<>'' AND deleted_at IS NULL AND
-		(status IN ('queued','processing') OR (status='done' AND settled_at IS NULL AND billing_mode='upstream_cost' AND COALESCE((task_snapshot->>'upstream_cost_reported')::boolean,false)=false))
+		WHERE provider='minimax' AND deleted_at IS NULL AND
+		(upstream_id<>'' OR (task_snapshot->>'upstream_protocol'='ll2' AND created_at>now()-interval '24 hours')) AND
+		(status IN ('queued','processing') OR (status='done' AND settled_at IS NULL AND
+		 ((billing_mode='upstream_cost' AND COALESCE((task_snapshot->>'upstream_cost_reported')::boolean,false)=false) OR
+		  (task_snapshot->>'upstream_protocol'='ll2' AND COALESCE((task_snapshot->>'output_seconds_reported')::boolean,false)=false))))
 		ORDER BY COALESCE((task_snapshot->>'last_polled_at')::timestamptz,created_at) LIMIT 100`)
 	if err != nil {
 		return err
@@ -130,6 +133,13 @@ func (s *OpenAIGatewayService) recoverKnownMinimaxVideoTasks(ctx context.Context
 			return err
 		}
 		if task == nil {
+			continue
+		}
+		if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && task.UpstreamID == "" {
+			_, _ = videoTaskHandle().ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=jsonb_set(task_snapshot,'{last_polled_at}',to_jsonb(now()::text)) WHERE task_id=$1 AND deleted_at IS NULL`, task.ID)
+			if err := s.RunLL2MinimaxVideoTask(ctx, p.id, p.user, p.key); err != nil {
+				slog.Warn("minimax_video.ll2_submission_retry_pending", "task_id", p.id, "error", err)
+			}
 			continue
 		}
 		if err := s.PollMinimaxVideoTask(ctx, task); err != nil {

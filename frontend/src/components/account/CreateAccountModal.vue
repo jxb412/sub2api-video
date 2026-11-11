@@ -3671,6 +3671,15 @@
           </div>
           <p class="input-hint">{{ t('admin.accounts.openai.endpointCapabilitiesDesc') }}</p>
         </div>
+        <div v-if="openAIEndpointCapabilities.includes('minimax_video')" class="space-y-2" data-testid="minimax-video-protocol-settings">
+          <label class="input-label" for="create-minimax-video-protocol">{{ t('admin.accounts.minimaxVideo.protocol') }}</label>
+          <select id="create-minimax-video-protocol" :value="minimaxVideoProtocol" class="input" data-testid="minimax-video-protocol" @change="changeMinimaxVideoProtocol">
+            <option value="ll2">{{ t('admin.accounts.minimaxVideo.ll2') }}</option>
+            <option value="getoken">{{ t('admin.accounts.minimaxVideo.getoken') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.minimaxVideo.protocolChangeHint') }}</p>
+          <p v-if="minimaxVideoProtocol === 'll2'" class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.accounts.minimaxVideo.ll2BillingHint') }}</p>
+        </div>
       </div>
 
       <!-- OpenAI APIKey images: backfill b64_json from url -->
@@ -4164,6 +4173,7 @@
 
 <script setup lang="ts">
 import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
+import { applyMinimaxVideoProtocol, minimaxLL2BaseURL, minimaxVideoProtocolBaseURL, type MinimaxVideoProtocol } from './minimaxVideoProtocol'
 import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4769,6 +4779,7 @@ const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
+const minimaxVideoProtocol = ref<MinimaxVideoProtocol>('getoken')
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
@@ -4902,12 +4913,21 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 }
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
+  applyMinimaxVideoProtocol(credentials, openAIEndpointCapabilities.value.includes('minimax_video'), minimaxVideoProtocol.value)
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
   if (isDefaultOpenAIEndpointCapabilities(capabilities)) {
     delete credentials.openai_capabilities
     return
   }
   credentials.openai_capabilities = capabilities
+}
+
+function changeMinimaxVideoProtocol(event: Event) {
+  const protocol = (event.target as HTMLSelectElement).value as MinimaxVideoProtocol
+  if (protocol === minimaxVideoProtocol.value) return
+  minimaxVideoProtocol.value = protocol
+  apiKeyValue.value = ''
+  apiKeyBaseUrl.value = minimaxVideoProtocolBaseURL(protocol, apiKeyBaseUrl.value)
 }
 
 async function applyVideoAccountPreset(provider: 'seedance' | 'minimax_video') {
@@ -4922,11 +4942,13 @@ async function applyVideoAccountPreset(provider: 'seedance' | 'minimax_video') {
   apiKeyValue.value = ''
   form.group_ids = []
   if (provider === 'seedance') {
+    minimaxVideoProtocol.value = 'getoken'
     apiKeyBaseUrl.value = 'https://ark.ap-southeast.bytepluses.com/api/v3'
     allowedModels.value = ['seedance-1-0-pro-250528', 'seedance-1-0-lite-t2v-250428', 'seedance-1-0-lite-i2v-250428']
     if (!form.name.trim() || form.name === 'MiniMax H3') form.name = 'Seedance / BytePlus'
   } else {
-    apiKeyBaseUrl.value = ''
+    minimaxVideoProtocol.value = 'll2'
+    apiKeyBaseUrl.value = minimaxLL2BaseURL
     allowedModels.value = ['MiniMax-H3']
     if (!form.name.trim() || form.name === 'Seedance / BytePlus') form.name = 'MiniMax H3'
   }
@@ -5290,6 +5312,7 @@ watch(
       openaiPassthroughEnabled.value = false
       openaiFlattenNamespacesEnabled.value = false
       openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+      minimaxVideoProtocol.value = 'getoken'
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       codexCLIOnlyEnabled.value = false
@@ -5756,6 +5779,7 @@ const resetForm = () => {
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+  minimaxVideoProtocol.value = 'getoken'
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false

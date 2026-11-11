@@ -151,6 +151,9 @@ func (s *OpenAIGatewayService) PrepareVideoBilling(ctx context.Context, task *Mi
 	}
 	settings := VideoBillingSettingsFor(key.Group)
 	task.BillingMode, task.RateMultiplier = settings.Mode, s.ResolveMinimaxVideoRateMultiplier(ctx, key)
+	if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && task.BillingMode != VideoBillingModeLocalPrice {
+		return fmt.Errorf("LL2 reports output seconds without monetary cost; configure local_price per-second video pricing for this group")
+	}
 	task.ResolutionTiers = settings.Tiers
 	switch task.BillingMode {
 	case VideoBillingModeLocalPrice:
@@ -389,6 +392,12 @@ func mergeVideoProviderResult(task *MinimaxVideoTask, result MinimaxVideoTask) {
 	if result.DurationSeconds > 0 {
 		task.DurationSeconds = result.DurationSeconds
 	}
+	if task.UpstreamProtocol == MinimaxVideoProtocolLL2 {
+		task.OutputSecondsReported = result.OutputSecondsReported
+		if !result.OutputSecondsReported {
+			task.DurationSeconds = task.RequestedDurationSeconds
+		}
+	}
 	task.VideoURL, task.Error = result.VideoURL, result.Error
 	task.UpstreamCostUSD, task.UpstreamCostReported = result.UpstreamCostUSD, result.UpstreamCostReported
 	task.InputTokens, task.OutputTokens, task.UsageReported = result.InputTokens, result.OutputTokens, result.UsageReported
@@ -571,7 +580,7 @@ func (s *OpenAIGatewayService) pollSeedanceTask(ctx context.Context, id string, 
 }
 
 func videoTaskNeedsProviderMetadata(task MinimaxVideoTask) bool {
-	return (task.BillingMode == VideoBillingModeUsageTokens && !task.UsageReported) || (task.BillingMode == VideoBillingModeUpstreamCost && !task.UpstreamCostReported)
+	return (task.UpstreamProtocol == MinimaxVideoProtocolLL2 && !task.OutputSecondsReported) || (task.BillingMode == VideoBillingModeUsageTokens && !task.UsageReported) || (task.BillingMode == VideoBillingModeUpstreamCost && !task.UpstreamCostReported)
 }
 
 func SeedanceVideoStatusBody(task MinimaxVideoTask, contentPath string) []byte {

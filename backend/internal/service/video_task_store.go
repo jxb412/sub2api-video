@@ -517,6 +517,10 @@ func loadMinimaxVideoTaskWithQueryer(ctx context.Context, db videoTaskQueryer, t
 		task.BillingModel, task.ExpiresAt = snapshot.BillingModel, snapshot.ExpiresAt
 		task.LastPolledAt = snapshot.LastPolledAt
 		task.CreateStarted = snapshot.CreateStarted
+		task.UpstreamProtocol, task.UpstreamBaseURL = snapshot.UpstreamProtocol, snapshot.UpstreamBaseURL
+		task.UpstreamCredentialHash, task.UpstreamRequestBody = snapshot.UpstreamCredentialHash, snapshot.UpstreamRequestBody
+		task.RequestedDurationSeconds, task.OutputSecondsReported = snapshot.RequestedDurationSeconds, snapshot.OutputSecondsReported
+		task.Ratio = snapshot.Ratio
 		task.AdmissionCost, task.AdmissionCostKnown = snapshot.AdmissionCost, snapshot.AdmissionCostKnown
 		task.InputTokens, task.OutputTokens, task.UsageReported = snapshot.InputTokens, snapshot.OutputTokens, snapshot.UsageReported
 		task.InputPricePerToken, task.OutputPricePerToken, task.TokenPricingConfigured = snapshot.InputPricePerToken, snapshot.OutputPricePerToken, snapshot.TokenPricingConfigured

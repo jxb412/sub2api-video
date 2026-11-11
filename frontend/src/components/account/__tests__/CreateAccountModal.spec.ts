@@ -240,26 +240,52 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     wrapper.unmount()
   })
 
-  it('prepares MiniMax H3 without selecting the generic OpenAI origin', async () => {
+  it('creates MiniMax H3 with the LL2 protocol and origin by default', async () => {
     const wrapper = mountModal()
     await wrapper.get('[data-testid="video-account-preset-minimax"]').trigger('click')
     await flushPromises()
     expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-minimax_video"]').element.checked).toBe(true)
     const baseURL = wrapper.findAll<HTMLInputElement>('input').find(input => input.attributes('placeholder') === 'https://api.openai.com')
-    expect(baseURL?.element.value).toBe('')
+    expect(baseURL?.element.value).toBe('https://api.ll2.cn')
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="minimax-video-protocol"]').element.value).toBe('ll2')
+    expect(wrapper.text()).toContain('admin.accounts.minimaxVideo.ll2BillingHint')
     await wrapper.get('form#create-account-form input[type="password"]').setValue('test-provider-key')
-    await wrapper.get('form#create-account-form').trigger('submit.prevent')
-    await flushPromises()
-    expect(createAccountMock).not.toHaveBeenCalled()
-    await baseURL!.setValue('https://video-provider.example/v1')
     await wrapper.get('form#create-account-form').trigger('submit.prevent')
     await flushPromises()
     expect(createAccountMock).toHaveBeenCalledWith(expect.objectContaining({
       platform: 'openai', type: 'apikey', credentials: expect.objectContaining({
-        openai_capabilities: ['minimax_video'], base_url: 'https://video-provider.example/v1',
+        openai_capabilities: ['minimax_video'], base_url: 'https://api.ll2.cn',
+        minimax_video_protocol: 'll2', api_key: 'test-provider-key',
         model_mapping: { 'MiniMax-H3': 'MiniMax-H3' },
       }),
     }))
+    wrapper.unmount()
+  })
+
+  it('clears the key when switching H3 protocol and persists a custom Getoken URL', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="video-account-preset-minimax"]').trigger('click')
+    await flushPromises()
+    const key = wrapper.get<HTMLInputElement>('form#create-account-form input[type="password"]')
+    const baseURL = wrapper.findAll<HTMLInputElement>('input').find(input => input.attributes('placeholder') === 'https://api.openai.com')!
+    await key.setValue('ll2-secret')
+    await baseURL.setValue('https://video-provider.example/custom/v1')
+    await wrapper.get('[data-testid="minimax-video-protocol"]').setValue('getoken')
+    expect(key.element.value).toBe('')
+    expect(baseURL.element.value).toBe('https://video-provider.example/custom/v1')
+    await key.setValue('getoken-secret')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).toMatchObject({
+      minimax_video_protocol: 'getoken', base_url: 'https://video-provider.example/custom/v1', api_key: 'getoken-secret',
+    })
+    wrapper.unmount()
+  })
+
+  it('does not add the H3 protocol to an ordinary OpenAI account', async () => {
+    const wrapper = await submitApiKeyAccount('openai')
+    expect(createAccountMock.mock.calls[0]?.[0]?.credentials).not.toHaveProperty('minimax_video_protocol')
+    expect(wrapper.find('[data-testid="minimax-video-protocol"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

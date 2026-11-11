@@ -170,12 +170,10 @@ func (h *OpenAIGatewayHandler) DownloadVideoTask(c *gin.Context) {
 		return
 	}
 	baseURL, token := h.gatewayService.MinimaxVideoAccountCredentials(c.Request.Context(), rec.AccountID)
-	task := &service.MinimaxVideoTask{
-		ID:         rec.TaskID,
-		Status:     rec.Status,
-		VideoURL:   rec.VideoURL,
-		AccountID:  rec.AccountID,
-		Resolution: rec.Resolution,
+	task, err := h.gatewayService.LoadMinimaxVideoTask(c.Request.Context(), rec.TaskID, rec.UserID, rec.APIKeyID)
+	if err != nil || task == nil {
+		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video task not found")
+		return
 	}
 	if err := h.gatewayService.StreamMinimaxVideoContent(c, task, baseURL, token); err != nil {
 		if !c.Writer.Written() {

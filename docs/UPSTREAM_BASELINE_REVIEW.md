@@ -2,6 +2,38 @@
 
 Reviewed on 2026-11-11 (Asia/Shanghai).
 
+## Latest upstream merge
+
+Video version 0.5.3 merges upstream main at
+`530c5e3a4f9c73ca2b0881191d0ef8e0d82c5484`, including v0.2.21
+(`10ba8f9b4dc2e6023d4a9879ab77b21841babd10`). The two subsequent
+upstream commits only synchronize the upstream version and update sponsors.
+Quya READMEs and the independent video version remain local.
+
+Because the original video repository imported a source snapshot, the merge
+first records its verified upstream ancestor `ee58c0013` without changing
+the video tree, then performs a normal three-way merge of newer upstream
+commits. Future upstream merges can use this ancestry directly.
+
+The merge preserves all 277 locally changed files outside the upstream
+intersection, including durable video tasks, billing/admission, recovery,
+download authorization, account capabilities, groups and migrations 340–344.
+Seedance and MiniMax model price entries retain their prior values; upstream
+pricing entries retain the official updated values. PR #8622 normalization
+appears once and still runs before Responses tool validation.
+
+The only new database migration relative to the previous video release is
+`249_add_usage_logs_api_key_cost_index_notx.sql`: a concurrent covering index
+on `usage_logs(api_key_id, created_at) INCLUDE(actual_cost)`. No video schema
+or settled billing records are rewritten. Applied migration checksums must
+remain unchanged. The Build workflow now exercises the full Linux unit and
+integration suites and frontend checks, rather than a video-only name filter.
+
+Production `142.54.187.42` was separately upgraded to Quya 0.4.24-quya.1.
+This video merge is validated and deployed only on the 154 test environment.
+
+## Original imported baseline
+
 The production-line merge `6862e1f57c8939eb7a482f1c05321e9176dd94df`
 contains upstream `ee58c0013`, which is 14 commits ahead of the v0.2.20
 release commit `dab829a4e9b7d1cc307189aea8b0319eb29e29d0` and includes that

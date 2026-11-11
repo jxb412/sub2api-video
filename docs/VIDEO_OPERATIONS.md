@@ -90,7 +90,10 @@ baseline of RMB 0.25. This is 20% markup and 16.67% gross margin on sales,
 assuming the baseline equals actual cost and ignoring other expenses. It is
 not 20% gross margin. These are formula examples, not verified LL2 tariffs or
 invoices. Unknown actual cost stays unreported; do not derive supplier cost or
-profit from local prices. Explicit zero prices and multipliers remain valid.
+profit from local prices. The admin video page separately accepts an estimated
+purchase amount and an actual amount verified against supplier records. An
+estimate never becomes actual cost automatically. Explicit zero prices and
+multipliers remain valid.
 
 LL2 settlement requires reported `usage.output_seconds` consistent with the
 submitted duration. Missing or inconsistent seconds remain pending for further
@@ -101,8 +104,11 @@ has completed. Legacy Getoken costs are recorded only when actually supplied.
 Migration 343 adds a durable task snapshot and settlement timestamp. Migration
 344 widens `video_tasks.upstream_cost_usd` and `billed_cost_usd` to NUMERIC(20,8),
 matching eight-decimal ledger precision and preserving existing amounts.
-Apply all missing 340–344 migrations before this version serves traffic;
-token metadata and provider state use the existing durable JSON snapshot.
+Migration 345 adds `video_tasks.execution_state`, independent procurement
+records and operation audit history. Apply all missing 340–345 migrations
+before this version serves traffic. Token metadata, provider identity and
+the immutable execution policy use the durable task snapshot; mutable retry
+state is separate so ordinary task saves cannot reset its budget.
 Successful
 tasks use the existing transactional billing ledger, keyed by task ID, to
 charge either balance or subscription and update configured quotas. Usage-log
@@ -110,14 +116,44 @@ and settlement-marker failures can be retried without charging twice. Failed
 tasks are not charged. Completed charges cannot be erased by marking a task
 failed in the admin panel.
 
-The recovery worker starts through Wire and checks every minute for incomplete
-settlements and recoverable tasks. Redis loss does not remove task history or
-billing inputs. The missing-ID 25-minute interruption rule applies to legacy
-Getoken and interrupted Seedance creation, not LL2. Getoken uses a blocking
-create with a 20-minute deadline and 5-minute grace; an unknown result after a
-crash requires reconciliation rather than blind resubmission. Known provider
-IDs are queried without creating another task. Legacy rows without a billing
-snapshot are not charged retroactively.
+Recovery starts through Wire with three independent loops for internal
+settlement, Seedance and H3. Each loop has a one-minute ticker; a running batch
+does not overlap itself, and slow requests can make an individual task's
+interval longer. Each supplier batch rotates tasks by last poll time. A slow
+supplier cannot block the other supplier or internal settlement; all loops
+stop with the service context. Redis loss does not remove task history,
+billing inputs or retry counters. The missing-ID 25-minute interruption rule
+flags legacy Getoken and interrupted Seedance creation for reconciliation,
+not automatic failure/refund or replay. Getoken's blocking create defaults to
+a 20-minute request timeout. Known provider IDs are queried without creating
+another task. Legacy rows without a billing snapshot are not charged
+retroactively.
+
+Account `extra.video_execution_policy` is validated and snapshotted at new
+task admission. Request timeouts apply to both submit and status requests,
+and are capped by the task's remaining automatic-processing lifetime.
+Defaults are 30 seconds for LL2, 45 for Seedance and 1200 for Getoken; task
+lifetimes default to 1200 seconds for H3 and 172800 for Seedance. Automatic
+retry defaults to enabled, three retries and a minimum 30-second interval.
+The retry count means additional attempts after the initial failed request;
+healthy processing polls consume no budget and reset consecutive failures.
+Missing settlement metadata counts as a failure while the completion itself
+is preserved. Timeouts and exhausted budgets pause supplier I/O without
+claiming cancellation or releasing an uncertain reservation.
+
+Old tasks without an `execution_policy` snapshot keep their legacy execution
+behavior. Changing the account does not retrofit them. An allowed explicit
+administrator resume installs the provider's defaults for such a task, not
+the account's current overrides. Resume resets the local deadline and budget
+under provider locks and writes an audit entry atomically. It cannot safely
+resume a missing-ID Getoken or Seedance submission, revive failed/deleted/
+settled tasks, or extend LL2's original submission recovery window.
+
+The finite retry budget governs supplier HTTP requests. Local idempotent
+settlement, usage-log repair and settlement-marker recovery continue even
+when supplier I/O is paused, if complete billing metadata already exists.
+Missing usage cannot be guessed to permit settlement. Procurement edits do
+not debit/refund users or rewrite usage logs and supplier-reported amounts.
 
 LL2 stores the exact upstream request bytes, protocol, normalized base URL and
 a SHA-256 identity of the API key and effective custom headers in the task
@@ -126,7 +162,9 @@ intent is saved before the outbound POST under a PostgreSQL advisory lock.
 The upstream `Idempotency-Key` is the gateway task ID; configured header
 overrides cannot replace this key or LL2 bearer authorization. On an ambiguous
 create result, recovery reuses the same bytes, key and bound account identity
-for at most 24 hours from admission, or an earlier stored expiry. This is the
+for at most 24 hours from admission, or an earlier stored expiry, and only
+while the snapshotted task deadline and finite retry policy permit. The H3
+default 20-minute task deadline can pause recovery much earlier. This is the
 gateway's automatic recovery limit; the supplier has not committed to an
 idempotency-record retention period, so this window is not a guaranteed
 24-hour supplier idempotency TTL. Each attempt has a bounded request timeout.
@@ -141,7 +179,8 @@ expires. Expiry only stops automatic creation attempts; it does not prove that
 the provider cancelled or rejected the original request. Reconcile the original
 task with supplier records before resolving the hold. A rejection following an
 earlier ambiguous attempt also does not prove that the first request failed.
-The 24-hour submission window does not expire known-ID polling.
+The 24-hour submission window does not expire known-ID polling; the separate
+task deadline and retry budget still apply to those queries.
 
 The billing ledger deduplicates by gateway task ID and API key. Repeated polls,
 recovery and settlement retries cannot debit the main balance/subscription/API
@@ -177,11 +216,12 @@ positive duration, or `upstream_cost` when the provider really reports dollars.
 Missing usage/cost metadata remains unsettled and is queried again; missing
 provider cost must not be interpreted as zero or used to fabricate profit.
 
-Known-ID Seedance recovery follows `execution_expires_after` rather than the
-legacy missing-ID 25-minute interruption rule: default 172800 seconds, allowed range
-3600–259200. A missing provider ID after interrupted create is never replayed
-blindly. Prolonged provider failures beyond expiry can end local waiting with
-an explicit reconciliation error; this does not confirm upstream cancellation.
+Seedance `execution_expires_after` is the provider execution lifetime: default
+172800 seconds, allowed range 3600–259200. It is distinct from the account's
+local automatic-processing deadline and retry budget. Known-ID queries use
+the local policy; local timeout or prolonged lookup errors pause for review
+without inventing provider cancellation or a terminal failure. A missing
+provider ID after interrupted create is never replayed blindly.
 Native Seedance DELETE hides terminal records only, returns 204 on success,
 and returns 409 for running or completed-but-unsettled tasks. It does not cancel
 billable generation or refund a completed charge.

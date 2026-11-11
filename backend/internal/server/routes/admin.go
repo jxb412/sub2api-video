@@ -717,6 +717,8 @@ func registerUsageRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		videoTasks.GET("/:id", h.OpenAIGateway.AdminGetVideoTask)
 		videoTasks.DELETE("/:id", h.OpenAIGateway.AdminDeleteVideoTask)
 		videoTasks.POST("/:id/fail", h.OpenAIGateway.FailVideoTask)
+		videoTasks.POST("/:id/reconcile", h.OpenAIGateway.ReconcileVideoTask)
+		videoTasks.POST("/:id/retry", h.OpenAIGateway.RetryVideoTask)
 	}
 	usage := admin.Group("/usage")
 	{

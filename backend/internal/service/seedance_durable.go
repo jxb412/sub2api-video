@@ -301,6 +301,9 @@ func (s *OpenAIGatewayService) callSeedanceVideo(ctx context.Context, account *A
 	if account == nil || strings.TrimSpace(account.GetCredential("api_key")) == "" {
 		return result, fmt.Errorf("Seedance account credential unavailable")
 	}
+	if method == http.MethodPost {
+		ctx = WithHTTPUpstreamProfile(ctx, HTTPUpstreamProfileVideo)
+	}
 	req, err := http.NewRequestWithContext(WithHTTPUpstreamRedirectsDisabled(ctx), method, target, bytes.NewReader(body))
 	if err != nil {
 		return result, err
@@ -317,7 +320,9 @@ func (s *OpenAIGatewayService) callSeedanceVideo(ctx context.Context, account *A
 	if s.httpUpstream != nil {
 		resp, err = s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
 	} else {
-		resp, err = MinimaxVideoUpstreamClient(30 * time.Second).Do(req)
+		// The immutable task policy bounds ctx; do not silently cap a configured
+		// request timeout at the legacy 30-second fallback client timeout.
+		resp, err = MinimaxVideoUpstreamClient(20 * time.Minute).Do(req)
 	}
 	if err != nil {
 		return result, err
@@ -350,14 +355,33 @@ func (s *OpenAIGatewayService) RunSeedanceVideoTask(ctx context.Context, task Mi
 	}
 	task.Status = MinimaxVideoStatusProcessing
 	task.CreateStarted = true
-	submitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	result, err := s.callSeedanceVideo(submitCtx, account, http.MethodPost, target, body)
-	cancel()
-	if err == nil && result.Status == MinimaxVideoStatusDone {
-		err = s.ValidateVideoDownloadURL(result.VideoURL, account.GetCredential("base_url"))
-	}
+	result, err := runVideoProviderAttempt(ctx, videoTaskHandle(), task, 45*time.Second, func(submitCtx context.Context) (MinimaxVideoTask, error) {
+		result, err := s.callSeedanceVideo(submitCtx, account, http.MethodPost, target, body)
+		if err == nil && result.Status == MinimaxVideoStatusDone {
+			err = s.ValidateVideoDownloadURL(result.VideoURL, account.GetCredential("base_url"))
+		}
+		if err == nil && strings.TrimSpace(result.UpstreamID) == "" {
+			err = fmt.Errorf("Seedance submission returned no provider task ID")
+		}
+		return result, err
+	})
 	if err != nil {
-		task.Status, task.Error, task.CompletedAt = MinimaxVideoStatusError, "Video submission failed; do not automatically retry an ambiguous submission", GrokVideoPendingCreatedAtNow()
+		if errors.Is(err, ErrVideoExecutionPaused) {
+			return
+		}
+		if ll2SubmissionDefinitelyRejected(err, false) {
+			task.Status, task.Error, task.CompletedAt = MinimaxVideoStatusError, "Video request rejected by the provider", GrokVideoPendingCreatedAtNow()
+		} else {
+			task.Status = MinimaxVideoStatusProcessing
+			if result.UpstreamID != "" && validateUpstreamPathSegment("Seedance video task ID", result.UpstreamID) == nil {
+				task.UpstreamID = result.UpstreamID
+			}
+			cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+			if task.UpstreamID == "" {
+				_ = pauseVideoExecution(cleanup, videoTaskHandle(), task, "submission_uncertain", "Provider acceptance is unknown; this submission cannot be replayed safely")
+			}
+			cancelCleanup()
+		}
 		s.persistVideoOutcome(task)
 		return
 	}
@@ -377,7 +401,7 @@ func (s *OpenAIGatewayService) RunSeedanceVideoTask(ctx context.Context, task Mi
 		if done {
 			return
 		}
-		if err != nil && ctx.Err() != nil {
+		if err != nil && (ctx.Err() != nil || errors.Is(err, ErrVideoExecutionPaused)) {
 			return
 		}
 	}
@@ -434,8 +458,6 @@ func (s *OpenAIGatewayService) persistVideoOutcome(task MinimaxVideoTask) error 
 // PostgreSQL session locks serialize polling across worker goroutines and replicas.
 // The connection is dedicated until unlock, and a crashed process releases it.
 func (s *OpenAIGatewayService) pollSeedanceTask(ctx context.Context, id string, userID, keyID int64) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
 	db := videoTaskHandle()
 	if db == nil {
 		return false, fmt.Errorf("video database unavailable")
@@ -449,6 +471,8 @@ func (s *OpenAIGatewayService) pollSeedanceTask(ctx context.Context, id string, 
 	if preliminary.IsTerminal() && (preliminary.Status != MinimaxVideoStatusDone || !videoTaskNeedsProviderMetadata(*preliminary)) {
 		return true, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, videoRequestTimeout(*preliminary, 30*time.Second)+5*time.Second)
+	defer cancel()
 	if s.accountRepo == nil {
 		return false, fmt.Errorf("video account repository unavailable")
 	}
@@ -458,12 +482,18 @@ func (s *OpenAIGatewayService) pollSeedanceTask(ctx context.Context, id string, 
 		if err == nil {
 			err = fmt.Errorf("video account unavailable")
 		}
+		_ = pauseVideoExecution(ctx, db, *preliminary, "configuration_changed", "Original provider account configuration is unavailable or changed")
 		return false, err
 	}
 	base, err := s.validateUpstreamBaseURL(account.GetCredential("base_url"))
 	if err != nil {
 		_, _ = db.ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=jsonb_set(task_snapshot,'{last_polled_at}',to_jsonb(now()::text)) WHERE task_id=$1 AND settled_at IS NULL`, id)
+		_ = pauseVideoExecution(ctx, db, *preliminary, "configuration_changed", "Original provider endpoint configuration is unavailable or changed")
 		return false, err
+	}
+	if (preliminary.UpstreamBaseURL != "" && preliminary.UpstreamBaseURL != base) || (preliminary.UpstreamCredentialHash != "" && preliminary.UpstreamCredentialHash != minimaxCredentialHash(account)) {
+		_ = pauseVideoExecution(ctx, db, *preliminary, "configuration_changed", "Original provider endpoint or credential changed")
+		return false, fmt.Errorf("Seedance account endpoint or credential changed")
 	}
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -523,27 +553,25 @@ func (s *OpenAIGatewayService) pollSeedanceTask(ctx context.Context, id string, 
 	if err != nil {
 		return false, err
 	}
-	pollCtx, pollCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer pollCancel()
-	result, err := s.callSeedanceVideo(pollCtx, account, http.MethodGet, target, nil)
-	deadline, deadlineErr := time.Parse(time.RFC3339Nano, task.ExpiresAt)
+	result, err := runVideoProviderAttempt(ctx, conn, *task, 30*time.Second, func(pollCtx context.Context) (MinimaxVideoTask, error) {
+		result, err := s.callSeedanceVideo(pollCtx, account, http.MethodGet, target, nil)
+		if err != nil {
+			return result, err
+		}
+		if result.UpstreamID != task.UpstreamID {
+			return result, fmt.Errorf("Seedance poll returned a different task ID")
+		}
+		if result.Status == MinimaxVideoStatusDone {
+			if err := s.ValidateVideoDownloadURL(result.VideoURL, base); err != nil {
+				return result, err
+			}
+		} else if wasDone {
+			return result, fmt.Errorf("provider tried to regress a completed task")
+		}
+		return result, nil
+	})
 	if err != nil {
-		var upstream *MinimaxVideoUpstreamError
-		exceeded := deadlineErr == nil && time.Now().After(deadline.Add(24*time.Hour))
-		gone := errors.As(err, &upstream) && upstream.StatusCode == http.StatusNotFound && deadlineErr == nil && time.Now().After(deadline.Add(time.Hour))
-		if !wasDone && (exceeded || gone) {
-			task.Status, task.Error, task.CompletedAt = MinimaxVideoStatusError, "Provider status unavailable after the deadline; manual provider reconciliation is required (upstream cancellation is not confirmed)", GrokVideoPendingCreatedAtNow()
-			return persistLocked()
-		}
 		return false, err
-	}
-	if result.UpstreamID != task.UpstreamID {
-		return false, fmt.Errorf("Seedance poll returned a different task ID")
-	}
-	if result.Status == MinimaxVideoStatusDone {
-		if err := s.ValidateVideoDownloadURL(result.VideoURL, base); err != nil {
-			return false, err
-		}
 	}
 	if wasDone {
 		if result.Status != MinimaxVideoStatusDone {
@@ -571,11 +599,7 @@ func (s *OpenAIGatewayService) pollSeedanceTask(ctx context.Context, id string, 
 		_, err = s.settleMinimaxVideoTask(ctx, *task)
 		return err == nil, err
 	}
-	if !result.IsTerminal() && deadlineErr == nil && time.Now().After(deadline.Add(24*time.Hour)) {
-		task.Status, task.Error, task.CompletedAt = MinimaxVideoStatusError, "Provider task exceeded its deadline; manual provider reconciliation is required (upstream cancellation is not confirmed)", GrokVideoPendingCreatedAtNow()
-	} else {
-		mergeVideoProviderResult(task, result)
-	}
+	mergeVideoProviderResult(task, result)
 	return persistLocked()
 }
 

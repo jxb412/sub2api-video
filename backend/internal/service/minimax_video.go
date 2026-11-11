@@ -75,34 +75,35 @@ func (e GrokMediaEndpoint) IsMinimaxVideo() bool {
 // Its billing snapshot and state are stored in PostgreSQL before submission;
 // completed jobs and pending settlements remain available across restarts.
 type MinimaxVideoTask struct {
-	ID                       string             `json:"id"`
-	Provider                 string             `json:"provider,omitempty"`
-	UpstreamID               string             `json:"upstream_id,omitempty"`
-	UpstreamProtocol         string             `json:"upstream_protocol,omitempty"`
-	UpstreamBaseURL          string             `json:"upstream_base_url,omitempty"`
-	UpstreamCredentialHash   string             `json:"upstream_credential_hash,omitempty"`
-	UpstreamRequestBody      json.RawMessage    `json:"upstream_request_body,omitempty"`
-	RequestedDurationSeconds int                `json:"requested_duration_seconds,omitempty"`
-	OutputSecondsReported    bool               `json:"output_seconds_reported,omitempty"`
-	Ratio                    string             `json:"ratio,omitempty"`
-	Status                   string             `json:"status"`
-	Model                    string             `json:"model"`
-	BillingModel             string             `json:"billing_model,omitempty"`
-	UpstreamModel            string             `json:"upstream_model,omitempty"`
-	Prompt                   string             `json:"prompt,omitempty"`
-	DurationSeconds          int                `json:"duration_seconds,omitempty"`
-	Resolution               string             `json:"resolution,omitempty"`
-	UpstreamCostUSD          float64            `json:"upstream_cost_usd,omitempty"`
-	UpstreamCostReported     bool               `json:"upstream_cost_reported,omitempty"`
-	InputTokens              int                `json:"input_tokens,omitempty"`
-	OutputTokens             int                `json:"output_tokens,omitempty"`
-	UsageReported            bool               `json:"usage_reported,omitempty"`
-	InputPricePerToken       float64            `json:"input_price_per_token,omitempty"`
-	OutputPricePerToken      float64            `json:"output_price_per_token,omitempty"`
-	TokenPricingConfigured   bool               `json:"token_pricing_configured,omitempty"`
-	ProviderResponse         json.RawMessage    `json:"provider_response,omitempty"`
-	ResolutionPrices         map[string]float64 `json:"resolution_prices,omitempty"`
-	ResolutionTiers          map[string]string  `json:"resolution_tiers,omitempty"`
+	ExecutionPolicy          *VideoExecutionPolicy `json:"execution_policy,omitempty"`
+	ID                       string                `json:"id"`
+	Provider                 string                `json:"provider,omitempty"`
+	UpstreamID               string                `json:"upstream_id,omitempty"`
+	UpstreamProtocol         string                `json:"upstream_protocol,omitempty"`
+	UpstreamBaseURL          string                `json:"upstream_base_url,omitempty"`
+	UpstreamCredentialHash   string                `json:"upstream_credential_hash,omitempty"`
+	UpstreamRequestBody      json.RawMessage       `json:"upstream_request_body,omitempty"`
+	RequestedDurationSeconds int                   `json:"requested_duration_seconds,omitempty"`
+	OutputSecondsReported    bool                  `json:"output_seconds_reported,omitempty"`
+	Ratio                    string                `json:"ratio,omitempty"`
+	Status                   string                `json:"status"`
+	Model                    string                `json:"model"`
+	BillingModel             string                `json:"billing_model,omitempty"`
+	UpstreamModel            string                `json:"upstream_model,omitempty"`
+	Prompt                   string                `json:"prompt,omitempty"`
+	DurationSeconds          int                   `json:"duration_seconds,omitempty"`
+	Resolution               string                `json:"resolution,omitempty"`
+	UpstreamCostUSD          float64               `json:"upstream_cost_usd,omitempty"`
+	UpstreamCostReported     bool                  `json:"upstream_cost_reported,omitempty"`
+	InputTokens              int                   `json:"input_tokens,omitempty"`
+	OutputTokens             int                   `json:"output_tokens,omitempty"`
+	UsageReported            bool                  `json:"usage_reported,omitempty"`
+	InputPricePerToken       float64               `json:"input_price_per_token,omitempty"`
+	OutputPricePerToken      float64               `json:"output_price_per_token,omitempty"`
+	TokenPricingConfigured   bool                  `json:"token_pricing_configured,omitempty"`
+	ProviderResponse         json.RawMessage       `json:"provider_response,omitempty"`
+	ResolutionPrices         map[string]float64    `json:"resolution_prices,omitempty"`
+	ResolutionTiers          map[string]string     `json:"resolution_tiers,omitempty"`
 	// 计费快照：提交时固定，避免任务完成后分组改价导致对不上账。
 	BillingMode        string                       `json:"billing_mode,omitempty"`
 	PricePerSecond     float64                      `json:"price_per_second,omitempty"`

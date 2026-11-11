@@ -233,6 +233,11 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 	if provider == service.VideoProviderSeedance {
 		task.ID = service.SeedanceVideoTaskID()
 	}
+	if err := service.SnapshotVideoExecutionPolicy(&task, account); err != nil {
+		h.errorResponse(c, http.StatusBadRequest, "video_account_configuration_error", err.Error())
+		return
+	}
+
 	task.BillingModel = info.Model
 	switch channelMapping.BillingModelSource {
 	case service.BillingModelSourceUpstream:
@@ -248,16 +253,14 @@ func (h *OpenAIGatewayHandler) asyncVideoGeneration(c *gin.Context, provider str
 	service.SnapshotMinimaxVideoBilling(&task, apiKey, account, subscription)
 	task.BillingSnapshot.Platform = service.QuotaPlatform(requestCtx, apiKey)
 	// Keep inflight reservation alive until settlement, even after the create response closes.
-	workerTimeout := 22 * time.Minute
+	workerTimeout := time.Duration(task.ExecutionPolicy.TaskTimeoutSeconds)*time.Second + 2*time.Minute
 	if provider == service.VideoProviderSeedance {
-		var lifetimeErr error
-		workerTimeout, lifetimeErr = service.SeedanceVideoLifetime(body)
+		providerLifetime, lifetimeErr := service.SeedanceVideoLifetime(body)
 		if lifetimeErr != nil {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", lifetimeErr.Error())
 			return
 		}
-		task.ExpiresAt = time.Now().UTC().Add(workerTimeout).Format(time.RFC3339Nano)
-		workerTimeout += 5 * time.Minute
+		task.ExpiresAt = time.Now().UTC().Add(providerLifetime).Format(time.RFC3339Nano)
 	}
 	workerCtx, cancelWorker := context.WithTimeout(context.WithoutCancel(requestCtx), workerTimeout)
 	releases = append(releases, cancelWorker)

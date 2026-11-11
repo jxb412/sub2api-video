@@ -46,6 +46,68 @@ export interface VideoTaskStats {
   success_rate: number
 }
 
+export interface VideoProcurement {
+  estimated_cost: number | null
+  actual_cost: number | null
+  revision: number
+  reference: string
+  note: string
+  updated_by: number | null
+  updated_at: string | null
+  reconciliation_status: 'pending' | 'reconciled'
+}
+
+export interface VideoExecutionState {
+  failure_count: number
+  last_error?: string
+  next_retry_at?: string | null
+  paused_reason?: string
+  deadline_at?: string | null
+  retry_generation?: number
+}
+
+export interface VideoOperationsHistory {
+  id: number
+  action: 'reconcile' | 'resume' | 'fail'
+  actor_id: number
+  created_at: string
+  before: Partial<VideoProcurement & VideoExecutionState>
+  after: Partial<VideoProcurement & VideoExecutionState>
+  note: string
+}
+
+/** Procurement and execution details are returned only by admin endpoints. */
+export interface AdminVideoTask extends VideoTask {
+  can_retry?: boolean
+  retry_unavailable_reason?: string
+  procurement?: VideoProcurement
+  execution?: VideoExecutionState
+  exception_codes?: string[]
+  operations_history?: VideoOperationsHistory[]
+}
+
+export interface VideoProcurementStats {
+  estimated_cost_total: number
+  actual_cost_total: number
+  actual_cost_count: number
+  pending_count: number
+  reconciled_revenue: number
+  confirmed_margin_percent: number | null
+}
+
+export interface VideoReconcileInput {
+  estimated_cost?: number | null
+  actual_cost?: number | null
+  reference: string
+  note: string
+  expected_revision: number
+}
+
+export interface AdminVideoTaskListParams extends VideoTaskListParams {
+  exception?: string
+  reconciliation_status?: 'pending' | 'reconciled'
+}
+
 export interface VideoTaskListParams {
   page?: number
   page_size?: number
@@ -93,19 +155,19 @@ export const videosAPI = {
 
 /** 管理端：全量视频任务 */
 export const adminVideosAPI = {
-  async list(params: VideoTaskListParams = {}) {
-    const { data } = await apiClient.get<Paged<VideoTask>>('/admin/videos', { params })
+  async list(params: AdminVideoTaskListParams = {}) {
+    const { data } = await apiClient.get<Paged<AdminVideoTask>>('/admin/videos', { params })
     return data
   },
-  async stats(params: VideoTaskListParams = {}) {
-    const { data } = await apiClient.get<{ stats: VideoTaskStats; margin_percent: number }>(
+  async stats(params: AdminVideoTaskListParams = {}) {
+    const { data } = await apiClient.get<{ stats: VideoTaskStats; margin_percent: number | null; procurement?: VideoProcurementStats; exception_counts?: Record<string, number> }>(
       '/admin/videos/stats',
       { params },
     )
     return data
   },
   async get(taskId: string) {
-    const { data } = await apiClient.get<VideoTask>(`/admin/videos/${encodeURIComponent(taskId)}`)
+    const { data } = await apiClient.get<AdminVideoTask>(`/admin/videos/${encodeURIComponent(taskId)}`)
     return data
   },
   async remove(taskId: string) {
@@ -114,6 +176,14 @@ export const adminVideosAPI = {
   },
   async fail(taskId: string, reason: string) {
     const { data } = await apiClient.post(`/admin/videos/${encodeURIComponent(taskId)}/fail`, { reason })
+    return data
+  },
+  async reconcile(taskId: string, input: VideoReconcileInput) {
+    const { data } = await apiClient.post<AdminVideoTask>(`/admin/videos/${encodeURIComponent(taskId)}/reconcile`, input)
+    return data
+  },
+  async retry(taskId: string, reason: string) {
+    const { data } = await apiClient.post<{ updated: boolean }>(`/admin/videos/${encodeURIComponent(taskId)}/retry`, { reason })
     return data
   },
 }

@@ -1482,6 +1482,23 @@ describe('EditAccountModal', () => {
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual(['chat_completions', 'seedance'])
   })
 
+  it('loads video retry customization and explicitly clears it when defaults are restored', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['seedance']
+    account.credentials.base_url = 'https://ark.ap-southeast.bytepluses.com/api/v3'
+    account.extra = { quota_limit: 10, video_execution_policy: { request_timeout_seconds: 60, task_timeout_seconds: 7200, retry_enabled: false, max_retries: 0, retry_interval_seconds: 45 } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="video-policy-custom"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="video-policy-retry"]').element.checked).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="video-policy-max_retries"]').element.value).toBe('0')
+    await wrapper.get('[data-testid="video-policy-custom"]').setValue(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ quota_limit: 10, video_execution_policy: null })
+    wrapper.unmount()
+  })
+
   it('preserves MiniMax and an unknown capability while editing account metadata', async () => {
     const account = buildAccount()
     account.credentials.openai_capabilities = ['minimax_video', 'future_video']

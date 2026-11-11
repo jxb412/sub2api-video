@@ -26,8 +26,6 @@ func (s *OpenAIGatewayService) RunLL2MinimaxVideoTask(ctx context.Context, taskI
 			retErr = fmt.Errorf("LL2 submission worker interrupted: %v", recovered)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
 	task, err := s.LoadMinimaxVideoTask(ctx, taskID, userID, apiKeyID)
 	if err != nil || task == nil {
 		return err
@@ -35,13 +33,19 @@ func (s *OpenAIGatewayService) RunLL2MinimaxVideoTask(ctx context.Context, taskI
 	if task.IsTerminal() || task.UpstreamID != "" {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, videoRequestTimeout(*task, 30*time.Second)+5*time.Second)
+	defer cancel()
 	if err := validateLL2SubmissionSnapshot(*task, time.Now()); err != nil {
+		if errors.Is(err, ErrLL2SubmissionExpired) {
+			_ = pauseVideoExecution(ctx, videoTaskHandle(), *task, "submission_expired", "Safe idempotent submission recovery window expired; reconcile with the supplier")
+		}
 		return err
 	}
 	// Repository access precedes the dedicated lock connection. This must also
 	// work when the database pool only has a single connection.
 	account, base, err := s.minimaxBoundTaskAccount(ctx, task)
 	if err != nil {
+		_ = pauseVideoExecution(ctx, videoTaskHandle(), *task, "configuration_changed", "Original provider account configuration is unavailable or changed")
 		return err
 	}
 	db := videoTaskHandle()
@@ -97,8 +101,22 @@ func (s *OpenAIGatewayService) RunLL2MinimaxVideoTask(ctx context.Context, taskI
 	if err := saveMinimaxVideoTaskWithExecer(ctx, conn, *task); err != nil {
 		return err
 	}
-	result, submitErr := s.callMinimaxVideoProtocol(ctx, account, MinimaxVideoProtocolLL2, http.MethodPost,
-		target, task.UpstreamRequestBody, task.ID)
+	result, submitErr := runVideoProviderAttempt(ctx, conn, *task, 30*time.Second, func(callCtx context.Context) (MinimaxVideoTask, error) {
+		result, err := s.callMinimaxVideoProtocol(callCtx, account, MinimaxVideoProtocolLL2, http.MethodPost,
+			target, task.UpstreamRequestBody, task.ID)
+		if err == nil {
+			if strings.TrimSpace(result.UpstreamID) == "" {
+				err = fmt.Errorf("LL2 submission returned no task ID; outcome requires idempotent recovery")
+			} else {
+				err = validateUpstreamPathSegment("LL2 video task ID", result.UpstreamID)
+			}
+		}
+		// POST acknowledges acceptance only; GET supplies authoritative metadata.
+		if err == nil {
+			result.Status = MinimaxVideoStatusProcessing
+		}
+		return result, err
+	})
 	if submitErr != nil {
 		if !ll2SubmissionDefinitelyRejected(submitErr, previouslyAttempted) {
 			return submitErr

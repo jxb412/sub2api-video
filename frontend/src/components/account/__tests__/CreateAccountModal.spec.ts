@@ -262,6 +262,24 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     wrapper.unmount()
   })
 
+  it('persists a customized H3 execution policy with retries explicitly disabled', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="video-account-preset-minimax"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="video-policy-custom"]').setValue(true)
+    await wrapper.get('[data-testid="video-policy-request_timeout_seconds"]').setValue('60')
+    await wrapper.get('[data-testid="video-policy-task_timeout_seconds"]').setValue('3600')
+    await wrapper.get('[data-testid="video-policy-retry"]').setValue(false)
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-provider-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra?.video_execution_policy).toEqual({
+      request_timeout_seconds: 60, task_timeout_seconds: 3600,
+      retry_enabled: false, max_retries: 3, retry_interval_seconds: 30,
+    })
+    wrapper.unmount()
+  })
+
   it('clears the key when switching H3 protocol and persists a custom Getoken URL', async () => {
     const wrapper = mountModal()
     await wrapper.get('[data-testid="video-account-preset-minimax"]').trigger('click')

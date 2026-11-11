@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -57,6 +59,11 @@ func adminVideoFilterFromQuery(c *gin.Context) service.VideoTaskFilter {
 	return f
 }
 
+func adminVideoOperationsFilterFromQuery(c *gin.Context) service.AdminVideoTaskFilter {
+	return service.AdminVideoTaskFilter{VideoTaskFilter: adminVideoFilterFromQuery(c),
+		Exception: strings.TrimSpace(c.Query("exception")), ReconciliationStatus: strings.TrimSpace(c.Query("reconciliation_status"))}
+}
+
 func queryInt(raw string, def int) int {
 	if v, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
 		return v
@@ -66,9 +73,13 @@ func queryInt(raw string, def int) int {
 
 // ListVideoTasks 全量视频任务列表。
 func (h *OpenAIGatewayHandler) AdminListVideoTasks(c *gin.Context) {
-	f := adminVideoFilterFromQuery(c)
-	items, total, err := service.ListVideoTasks(c.Request.Context(), f)
+	f := adminVideoOperationsFilterFromQuery(c)
+	items, total, err := service.ListAdminVideoTasks(c.Request.Context(), f)
 	if err != nil {
+		if errors.Is(err, service.ErrVideoOperationInvalid) {
+			videoOperationError(c, err)
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to load video tasks"})
 		return
 	}
@@ -82,26 +93,23 @@ func (h *OpenAIGatewayHandler) AdminListVideoTasks(c *gin.Context) {
 
 // VideoTaskStats 统计 + 毛利。
 func (h *OpenAIGatewayHandler) AdminVideoTaskStats(c *gin.Context) {
-	f := adminVideoFilterFromQuery(c)
+	f := adminVideoOperationsFilterFromQuery(c)
 	f.Page, f.PageSize = 0, 0
-	stats, err := service.VideoTaskStatsFor(c.Request.Context(), f)
+	stats, err := service.AdminVideoTaskStatsFor(c.Request.Context(), f)
 	if err != nil {
+		if errors.Is(err, service.ErrVideoOperationInvalid) {
+			videoOperationError(c, err)
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to load stats"})
 		return
 	}
-	margin := 0.0
-	if stats.BilledCost > 0 {
-		margin = (stats.BilledCost - stats.UpstreamCost) / stats.BilledCost * 100
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{
-		"stats":          stats,
-		"margin_percent": margin,
-	}})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": stats})
 }
 
 // GetVideoTask 任务详情（管理端可看已删除）。
 func (h *OpenAIGatewayHandler) AdminGetVideoTask(c *gin.Context) {
-	rec, err := service.GetVideoTask(c.Request.Context(), strings.TrimSpace(c.Param("id")), 0)
+	rec, err := service.GetAdminVideoTask(c.Request.Context(), strings.TrimSpace(c.Param("id")))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to load task"})
 		return
@@ -140,6 +148,11 @@ func (h *OpenAIGatewayHandler) AdminDeleteVideoTask(c *gin.Context) {
 
 // FailVideoTask marks only unfinished tasks as failed; it never rewrites settled charges.
 func (h *OpenAIGatewayHandler) FailVideoTask(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "administrator identity required"})
+		return
+	}
 	taskID := strings.TrimSpace(c.Param("id"))
 	var input struct {
 		Reason string `json:"reason"`
@@ -156,13 +169,71 @@ func (h *OpenAIGatewayHandler) FailVideoTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "reason is too long"})
 		return
 	}
-	updated, err := service.FailPendingVideoTask(c.Request.Context(), taskID, reason)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "failed to update task"})
+	if err := service.FailVideoTaskWithAudit(c.Request.Context(), taskID, subject.UserID, reason); err != nil {
+		videoOperationError(c, err)
 		return
 	}
-	if !updated {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "task is missing or already completed"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{"updated": true}})
+}
+
+func videoOperationError(c *gin.Context, err error) {
+	status, message := http.StatusInternalServerError, "video operation failed"
+	switch {
+	case errors.Is(err, service.ErrVideoOperationInvalid):
+		status, message = http.StatusBadRequest, err.Error()
+	case errors.Is(err, service.ErrVideoOperationConflict):
+		status, message = http.StatusConflict, err.Error()
+	case errors.Is(err, service.ErrVideoOperationNotFound):
+		status, message = http.StatusNotFound, err.Error()
+	}
+	c.JSON(status, gin.H{"code": status, "message": message})
+}
+
+// Procurement updates never invoke settlement or modify user charges.
+func (h *OpenAIGatewayHandler) ReconcileVideoTask(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "administrator identity required"})
+		return
+	}
+	var input service.ReconcileVideoTaskInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid reconciliation request"})
+		return
+	}
+	taskID := strings.TrimSpace(c.Param("id"))
+	if err := service.ReconcileVideoTask(c.Request.Context(), taskID, subject.UserID, input); err != nil {
+		videoOperationError(c, err)
+		return
+	}
+	rec, err := service.GetAdminVideoTask(c.Request.Context(), taskID)
+	if err != nil {
+		videoOperationError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": rec})
+}
+
+func (h *OpenAIGatewayHandler) RetryVideoTask(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "administrator identity required"})
+		return
+	}
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "invalid retry request"})
+		return
+	}
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" || len(reason) > 1000 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "a retry reason of up to 1000 characters is required"})
+		return
+	}
+	if err := service.ResumeVideoTaskExecution(c.Request.Context(), strings.TrimSpace(c.Param("id")), subject.UserID, reason); err != nil {
+		videoOperationError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": gin.H{"updated": true}})

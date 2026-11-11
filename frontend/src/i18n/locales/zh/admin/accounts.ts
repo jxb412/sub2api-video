@@ -1,5 +1,16 @@
 export default {
     accounts: {
+      videoExecution: {
+        title: '视频超时与重试',
+        custom: '自定义本账号的视频策略',
+        requestTimeout: '单次上游请求超时（秒）',
+        taskTimeout: '任务自动处理时限（秒）',
+        maxRetries: '连续失败后最多重试次数',
+        retryInterval: '重试间隔（秒）',
+        retry: '启用失败后的自动重试',
+        hint: '关闭自定义时使用供应商默认值；修改仅影响新任务。Getoken 的生成请求会长时间等待，默认请求超时为 1200 秒。',
+        safetyHint: '重试次数指首次失败后的额外尝试；成功查询后清零，正常生成中轮询不计次。间隔为最短等待，后台恢复可能晚于设定时间。超时或重试耗尽转入异常中心，不会自动退款或创建新视频。仅 LL2 可用原幂等键恢复提交。',
+      },
       minimaxVideo: {
         protocol: 'MiniMax H3 上游协议',
         ll2: 'LL2',

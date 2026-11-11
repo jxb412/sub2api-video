@@ -2221,6 +2221,13 @@
         </div>
       </div>
 
+      <VideoExecutionPolicyFields
+        v-if="account?.platform === 'openai' && account?.type === 'apikey' && (openAIEndpointCapabilities.includes('minimax_video') || openAIEndpointCapabilities.includes('seedance'))"
+        v-model="videoExecutionPolicy"
+        :seedance="openAIEndpointCapabilities.includes('seedance') && !openAIEndpointCapabilities.includes('minimax_video')"
+        :protocol="minimaxVideoProtocol"
+      />
+
       <!-- OpenAI APIKey images: backfill b64_json from url -->
       <div
         v-if="account?.platform === 'openai' && account?.type === 'apikey'"
@@ -3430,6 +3437,8 @@
 
 <script setup lang="ts">
 import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, readOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
+import VideoExecutionPolicyFields from './VideoExecutionPolicyFields.vue'
+import { applyVideoExecutionPolicy, readVideoExecutionPolicy, type VideoExecutionPolicy } from './videoExecutionPolicy'
 import { applyMinimaxVideoProtocol, minimaxVideoProtocolBaseURL, readMinimaxVideoProtocol, type MinimaxVideoProtocol } from './minimaxVideoProtocol'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -4216,6 +4225,7 @@ const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const minimaxVideoProtocol = ref<MinimaxVideoProtocol>('getoken')
+const videoExecutionPolicy = ref<VideoExecutionPolicy | null>(null)
 const minimaxVideoProtocolChanged = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -4704,6 +4714,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   minimaxVideoProtocol.value = readMinimaxVideoProtocol(newAccount.credentials as Record<string, unknown> | undefined)
   minimaxVideoProtocolChanged.value = false
+  videoExecutionPolicy.value = readVideoExecutionPolicy(newAccount.extra as Record<string, unknown> | undefined)
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -6302,6 +6313,7 @@ const handleSubmit = async () => {
         }
 		}
 		applyOpenAIImageSizeTiersToExtra(newExtra, openAIImageSizeTiers.value)
+      applyVideoExecutionPolicy(newExtra, props.account.type === 'apikey' && (openAIEndpointCapabilities.value.includes('minimax_video') || openAIEndpointCapabilities.value.includes('seedance')), videoExecutionPolicy.value)
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
 		} else {

@@ -74,7 +74,6 @@
           <button type="button" class="btn btn-secondary text-sm" data-testid="video-account-preset-minimax" @click="applyVideoAccountPreset('minimax_video')">MiniMax H3</button>
         </div>
         <p class="mt-2 text-xs text-gray-600 dark:text-gray-400">{{ t('admin.groups.videoPricing.accountPresetHint') }}</p>
-        <a href="https://www.yunqiao.me/guide#video-admin" target="_blank" rel="noopener noreferrer" class="mt-1 inline-block text-xs text-indigo-600 hover:underline">{{ t('admin.groups.videoPricing.setupGuide') }}</a>
       </div>
 
       <!-- Platform Selection - Segmented Control Style -->
@@ -3682,6 +3681,13 @@
         </div>
       </div>
 
+      <VideoExecutionPolicyFields
+        v-if="form.platform === 'openai' && accountCategory === 'apikey' && (openAIEndpointCapabilities.includes('minimax_video') || openAIEndpointCapabilities.includes('seedance'))"
+        v-model="videoExecutionPolicy"
+        :seedance="openAIEndpointCapabilities.includes('seedance') && !openAIEndpointCapabilities.includes('minimax_video')"
+        :protocol="minimaxVideoProtocol"
+      />
+
       <!-- OpenAI APIKey images: backfill b64_json from url -->
       <div
         v-if="form.platform === 'openai' && accountCategory === 'apikey'"
@@ -4173,6 +4179,8 @@
 
 <script setup lang="ts">
 import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
+import VideoExecutionPolicyFields from './VideoExecutionPolicyFields.vue'
+import { applyVideoExecutionPolicy, type VideoExecutionPolicy } from './videoExecutionPolicy'
 import { applyMinimaxVideoProtocol, minimaxLL2BaseURL, minimaxVideoProtocolBaseURL, type MinimaxVideoProtocol } from './minimaxVideoProtocol'
 import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -4780,6 +4788,7 @@ const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
 const minimaxVideoProtocol = ref<MinimaxVideoProtocol>('getoken')
+const videoExecutionPolicy = ref<VideoExecutionPolicy | null>(null)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
@@ -4941,6 +4950,7 @@ async function applyVideoAccountPreset(provider: 'seedance' | 'minimax_video') {
   openaiPassthroughEnabled.value = false
   apiKeyValue.value = ''
   form.group_ids = []
+  videoExecutionPolicy.value = null
   if (provider === 'seedance') {
     minimaxVideoProtocol.value = 'getoken'
     apiKeyBaseUrl.value = 'https://ark.ap-southeast.bytepluses.com/api/v3'
@@ -5313,6 +5323,7 @@ watch(
       openaiFlattenNamespacesEnabled.value = false
       openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
       minimaxVideoProtocol.value = 'getoken'
+      videoExecutionPolicy.value = null
       openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
       codexCLIOnlyEnabled.value = false
@@ -5780,6 +5791,7 @@ const resetForm = () => {
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
   minimaxVideoProtocol.value = 'getoken'
+  videoExecutionPolicy.value = null
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   codexCLIOnlyEnabled.value = false
@@ -5920,6 +5932,7 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
     delete extra.images_url_to_b64_json
   }
   applyOpenAIImageSizeTiersToExtra(extra, openAIImageSizeTiers.value)
+  applyVideoExecutionPolicy(extra, accountCategory.value === 'apikey' && (openAIEndpointCapabilities.value.includes('minimax_video') || openAIEndpointCapabilities.value.includes('seedance')), videoExecutionPolicy.value)
 
   return Object.keys(extra).length > 0 ? extra : undefined
 }

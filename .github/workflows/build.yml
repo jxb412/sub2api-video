@@ -13,6 +13,20 @@ jobs:
   backend:
     name: backend build + unit tests
     runs-on: ubuntu-latest
+    services:
+      video-operations-postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: video_test
+          POSTGRES_PASSWORD: video_ci_only
+          POSTGRES_DB: video_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U video_test -d video_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     defaults:
       run:
         working-directory: backend
@@ -37,6 +51,8 @@ jobs:
         run: go test -tags=unit ./... -count=1
 
       - name: Database integration tests
+        env:
+          VIDEO_OPERATIONS_TEST_DSN: postgres://video_test:video_ci_only@127.0.0.1:5432/video_test?sslmode=disable
         run: go test -tags=integration ./... -count=1
 
   frontend:

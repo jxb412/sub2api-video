@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -312,7 +313,7 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 			defer cancel()
 			task, err := s.LoadMinimaxVideoTask(cleanup, taskID, userID, apiKeyID)
 			if err == nil && task != nil && task.UpstreamID == "" {
-				_, _ = FailPendingVideoTask(cleanup, taskID, "Video worker interrupted")
+				_ = pauseVideoExecution(cleanup, videoTaskHandle(), *task, "submission_uncertain", "Submission was interrupted; provider acceptance must be reconciled")
 			}
 		}
 	}()
@@ -328,15 +329,24 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 	}
 	// Keep the immutable billing snapshot for submission. Polling always reloads
 	// durable state so an operator's terminal decision cannot be overwritten.
-	workCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
+	workCtx, cancel := context.WithTimeout(ctx, videoTaskTimeout(*task, 20*time.Minute))
 	defer cancel()
 	account, base, runErr := s.minimaxBoundTaskAccount(workCtx, task)
 	var result MinimaxVideoTask
 	if runErr == nil {
 		targetURL, runErr = BuildMinimaxVideoURL(base, MinimaxVideoEndpointCreate, "")
 	}
+	if runErr != nil {
+		// No HTTP request was sent. The non-idempotent provider cannot replay a
+		// job from stored bytes, so reject locally without retaining a false hold.
+		task.Status, task.Error, task.CompletedAt = MinimaxVideoStatusError, "Video account configuration is unavailable or changed", GrokVideoPendingCreatedAtNow()
+		_ = s.persistVideoOutcome(*task)
+		return
+	}
 	if runErr == nil {
-		result, runErr = s.callMinimaxVideo(workCtx, account, http.MethodPost, targetURL, body)
+		result, runErr = runVideoProviderAttempt(workCtx, videoTaskHandle(), *task, 20*time.Minute, func(callCtx context.Context) (MinimaxVideoTask, error) {
+			return s.callMinimaxVideo(callCtx, account, http.MethodPost, targetURL, body)
+		})
 	}
 	if runErr == nil && result.Status == MinimaxVideoStatusDone {
 		runErr = s.validateMinimaxCompletedResult(result, base)
@@ -345,14 +355,31 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 		runErr = fmt.Errorf("upstream pending response has no task id")
 	}
 	if runErr != nil {
-		task.Status = MinimaxVideoStatusError
-		task.Error = "Video submission failed; do not automatically retry an ambiguous submission"
-		task.CompletedAt = GrokVideoPendingCreatedAtNow()
+		if errors.Is(runErr, ErrVideoExecutionPaused) {
+			return
+		}
+		if ll2SubmissionDefinitelyRejected(runErr, false) {
+			task.Status = MinimaxVideoStatusError
+			task.Error = "Video request rejected by the provider"
+			task.CompletedAt = GrokVideoPendingCreatedAtNow()
+		} else {
+			// A timed-out blocking POST may still be generating and billable.
+			// Preserve the hold until an administrator checks the supplier.
+			task.Status = MinimaxVideoStatusProcessing
+			if result.UpstreamID != "" && validateUpstreamPathSegment("video task ID", result.UpstreamID) == nil {
+				task.UpstreamID = result.UpstreamID
+			}
+			cleanup, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
+			if task.UpstreamID == "" {
+				_ = pauseVideoExecution(cleanup, videoTaskHandle(), *task, "submission_uncertain", "Provider acceptance is unknown; this submission cannot be replayed safely")
+			}
+			cancelCleanup()
+		}
 		slog.Warn("minimax_video.task_failed", "task_id", taskID, "error", runErr)
 	} else {
 		mergeVideoProviderResult(task, result)
 	}
-	if err := s.persistVideoOutcome(*task); err != nil || task.IsTerminal() {
+	if err := s.persistVideoOutcome(*task); err != nil || task.IsTerminal() || runErr != nil {
 		if err != nil {
 			slog.Warn("minimax_video.outcome_persist_failed", "task_id", taskID, "error", err)
 		}
@@ -370,6 +397,9 @@ func (s *OpenAIGatewayService) RunMinimaxVideoTask(
 		}
 		if err := s.PollMinimaxVideoTask(workCtx, task); err != nil {
 			slog.Warn("minimax_video.poll_retry_pending", "task_id", taskID, "error", err)
+			if errors.Is(err, ErrVideoExecutionPaused) {
+				return
+			}
 		}
 		if task.IsTerminal() {
 			return
@@ -416,11 +446,11 @@ func (s *OpenAIGatewayService) minimaxTaskAccount(ctx context.Context, id int64)
 // Transient errors preserve pending state; only a valid terminal response is
 // published and charged. The caller receives authoritative state in task.
 func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *MinimaxVideoTask) error {
-	ctx, cancelPoll := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelPoll()
 	if task == nil {
 		return fmt.Errorf("video task unavailable")
 	}
+	ctx, cancelPoll := context.WithTimeout(ctx, videoRequestTimeout(*task, 30*time.Second)+5*time.Second)
+	defer cancelPoll()
 	db := videoTaskHandle()
 	if db == nil {
 		return fmt.Errorf("video database unavailable")
@@ -432,6 +462,7 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 		// Missing/deleted accounts must not permanently monopolize the oldest
 		// recovery batch. No lock connection is held while rotating this attempt.
 		_, _ = db.ExecContext(ctx, `UPDATE video_tasks SET task_snapshot=jsonb_set(task_snapshot,'{last_polled_at}',to_jsonb(now()::text)) WHERE task_id=$1 AND deleted_at IS NULL`, task.ID)
+		_ = pauseVideoExecution(ctx, db, *task, "configuration_changed", "Original provider account configuration is unavailable or changed")
 		return err
 	}
 	conn, err := db.Conn(ctx)
@@ -496,25 +527,31 @@ func (s *OpenAIGatewayService) PollMinimaxVideoTask(ctx context.Context, task *M
 	if err != nil {
 		return err
 	}
-	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	result, err := s.callMinimaxVideoProtocol(pollCtx, account, task.UpstreamProtocol, http.MethodGet, target, nil, "")
+	result, err := runVideoProviderAttempt(ctx, conn, *task, 30*time.Second, func(pollCtx context.Context) (MinimaxVideoTask, error) {
+		result, err := s.callMinimaxVideoProtocol(pollCtx, account, task.UpstreamProtocol, http.MethodGet, target, nil, "")
+		if err != nil {
+			return result, err
+		}
+		if result.UpstreamID == "" {
+			result.UpstreamID = task.UpstreamID
+		}
+		if result.UpstreamID != task.UpstreamID {
+			return result, fmt.Errorf("minimax poll returned a different task ID")
+		}
+		if result.Status == MinimaxVideoStatusDone {
+			if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && result.OutputSecondsReported && result.DurationSeconds != task.RequestedDurationSeconds {
+				return result, fmt.Errorf("LL2 returned output seconds inconsistent with the submitted duration")
+			}
+			if err := s.validateMinimaxCompletedResult(result, base); err != nil {
+				return result, err
+			}
+		} else if wasDone {
+			return result, fmt.Errorf("provider tried to regress a completed task")
+		}
+		return result, nil
+	})
 	if err != nil {
 		return err
-	}
-	if result.UpstreamID == "" {
-		result.UpstreamID = task.UpstreamID
-	}
-	if result.UpstreamID != task.UpstreamID {
-		return fmt.Errorf("minimax poll returned a different task ID")
-	}
-	if result.Status == MinimaxVideoStatusDone {
-		if task.UpstreamProtocol == MinimaxVideoProtocolLL2 && result.OutputSecondsReported && result.DurationSeconds != task.RequestedDurationSeconds {
-			return fmt.Errorf("LL2 returned output seconds inconsistent with the submitted duration")
-		}
-		if err := s.validateMinimaxCompletedResult(result, base); err != nil {
-			return err
-		}
 	}
 	if result.Status == MinimaxVideoStatusError {
 		result.Error = "Video generation failed or was cancelled by the provider"
@@ -614,6 +651,9 @@ func (s *OpenAIGatewayService) RunLL2MinimaxVideoWorker(ctx context.Context, tas
 		}
 		if err := s.PollMinimaxVideoTask(ctx, task); err != nil {
 			slog.Warn("minimax_video.poll_retry_pending", "task_id", taskID, "error", err)
+			if errors.Is(err, ErrVideoExecutionPaused) {
+				return
+			}
 		}
 		if task.IsTerminal() {
 			return

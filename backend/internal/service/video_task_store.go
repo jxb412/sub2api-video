@@ -510,6 +510,7 @@ func loadMinimaxVideoTaskWithQueryer(ctx context.Context, db videoTaskQueryer, t
 			return nil, err
 		}
 		task.BillingSnapshot = snapshot.BillingSnapshot
+		task.ExecutionPolicy = snapshot.ExecutionPolicy
 		task.PriceConfigured = snapshot.PriceConfigured
 		task.PricePerSecond = snapshot.PricePerSecond
 		task.RateMultiplier = snapshot.RateMultiplier

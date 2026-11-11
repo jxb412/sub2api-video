@@ -1,5 +1,16 @@
 export default {
     accounts: {
+      videoExecution: {
+        title: 'Video timeouts and retries',
+        custom: 'Customize video policy for this account',
+        requestTimeout: 'Upstream request timeout (seconds)',
+        taskTimeout: 'Automatic processing deadline (seconds)',
+        maxRetries: 'Maximum retries after consecutive failures',
+        retryInterval: 'Retry interval (seconds)',
+        retry: 'Retry failed requests automatically',
+        hint: 'Use provider defaults when customization is off. Changes apply only to new tasks. Getoken creation blocks while generating, so its default request timeout is 1200 seconds.',
+        safetyHint: 'Retries are additional attempts after the first failure; success resets the count. Normal processing polls do not count. The interval is a minimum; background recovery may run later. Timeouts and exhausted retries move tasks to exceptions without refunds or new orders. Only LL2 can resume submission with its original idempotency key.',
+      },
       minimaxVideo: {
         protocol: 'MiniMax H3 upstream protocol',
         ll2: 'LL2',

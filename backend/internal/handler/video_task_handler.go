@@ -74,8 +74,12 @@ func (h *OpenAIGatewayHandler) ListVideoTasks(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to load video tasks")
 		return
 	}
+	publicItems := make([]customerVideoTask, 0, len(items))
+	for _, item := range items {
+		publicItems = append(publicItems, customerVideoTaskFromRecord(item))
+	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
-		"items":     items,
+		"items":     publicItems,
 		"total":     total,
 		"page":      f.Page,
 		"page_size": f.PageSize,
@@ -98,7 +102,7 @@ func (h *OpenAIGatewayHandler) GetVideoTask(c *gin.Context) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Video task not found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rec})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": customerVideoTaskFromRecord(*rec)})
 }
 
 // DeleteVideoTask 软删除任务；进行中的任务不允许删除。
@@ -148,7 +152,7 @@ func (h *OpenAIGatewayHandler) VideoTaskStats(c *gin.Context) {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to load video stats")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": stats})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": customerVideoStatsFromRecord(stats)})
 }
 
 // DownloadVideoTask 供面板下载视频：JWT 鉴权 + 归属校验后回源取流。
@@ -176,8 +180,6 @@ func (h *OpenAIGatewayHandler) DownloadVideoTask(c *gin.Context) {
 		return
 	}
 	if err := h.gatewayService.StreamMinimaxVideoContent(c, task, baseURL, token); err != nil {
-		if !c.Writer.Written() {
-			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
-		}
+		h.writeVideoContentError(c, err)
 	}
 }

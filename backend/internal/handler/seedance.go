@@ -87,8 +87,8 @@ func (h *OpenAIGatewayHandler) seedanceDurableLookup(c *gin.Context) {
 			return
 		}
 		base, token := h.gatewayService.MinimaxVideoAccountCredentials(c.Request.Context(), task.AccountID)
-		if err := h.gatewayService.StreamMinimaxVideoContent(c, task, base, token); err != nil && !c.Writer.Written() {
-			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
+		if err := h.gatewayService.StreamMinimaxVideoContent(c, task, base, token); err != nil {
+			h.writeVideoContentError(c, err)
 		}
 		return
 	}

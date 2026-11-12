@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -13,6 +14,13 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+)
+
+// Download availability is independent of generation and billing state.
+var (
+	ErrVideoContentExpired     = errors.New("video content has expired")
+	ErrVideoContentUnavailable = errors.New("video content is unavailable")
 )
 
 // MinimaxVideoRequestURL applies the same operator URL policy as other providers.
@@ -168,6 +176,19 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusGone {
+			return ErrVideoContentExpired
+		}
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusConflict {
+			// Getoken's content endpoint returns 409 even after the file expires.
+			// A read-only status check distinguishes that from a temporary failure.
+			// Do not change the completed task, replay generation, or touch billing.
+			_ = resp.Body.Close()
+			if task.Provider != VideoProviderSeedance && !ll2 && minimaxVideoContentExpired(c.Request.Context(), client, task, baseURL, token) {
+				return ErrVideoContentExpired
+			}
+			return ErrVideoContentUnavailable
+		}
 		return fmt.Errorf("video upstream returned %d", resp.StatusCode)
 	}
 	contentType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
@@ -184,6 +205,47 @@ func (s *OpenAIGatewayService) StreamMinimaxVideoContent(c *gin.Context, task *M
 	c.Status(http.StatusOK)
 	_, err = io.Copy(c.Writer, resp.Body)
 	return err
+}
+
+func minimaxVideoContentExpired(ctx context.Context, client *http.Client, task *MinimaxVideoTask, baseURL, token string) bool {
+	if task.UpstreamID == "" {
+		return false
+	}
+	target, err := BuildMinimaxVideoURL(baseURL, MinimaxVideoEndpointStatus, task.UpstreamID)
+	if err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Accept", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	queryClient := *client
+	// Status credentials may only be sent to the bound provider URL.
+	queryClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := queryClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (256<<10)+1))
+	if err != nil || len(body) > 256<<10 || !gjson.ValidBytes(body) {
+		return false
+	}
+	root := gjson.ParseBytes(body)
+	id := strings.TrimSpace(root.Get("request_id").String())
+	if id == "" {
+		id = strings.TrimSpace(root.Get("id").String())
+	}
+	return id == task.UpstreamID && strings.EqualFold(strings.TrimSpace(root.Get("status").String()), "expired")
 }
 
 func setMinimaxVideoDownloadAuthorization(req *http.Request, origin *url.URL, token string, public bool) {

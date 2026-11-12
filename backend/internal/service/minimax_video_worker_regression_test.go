@@ -123,7 +123,7 @@ func TestMinimaxWorkerActualTierReportedZeroAndAccountTransport(t *testing.T) {
 	require.Equal(t, 3.2, ComputeMinimaxVideoSettlement(saved, saved.BillingMode, nil, 1).BilledCost)
 	var status map[string]any
 	require.NoError(t, json.Unmarshal(MinimaxVideoTaskStatusBody(saved, "/content"), &status))
-	require.Equal(t, float64(0), status["usage"].(map[string]any)["upstream_cost_usd"])
+	require.NotContains(t, status, "usage", "supplier costs are not customer usage")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

@@ -10,6 +10,20 @@ media generation for the group. New H3 accounts default to LL2 at
 credentials belong in operator configuration; clients continue to use the
 gateway routes and their gateway API keys.
 
+Customer video list/detail/statistics and generation/status responses expose
+customer charges and usage only. Procurement prices, upstream task IDs and
+account routing details are reserved for administrator endpoints. Seedance
+status metadata is allowlisted instead of forwarding arbitrary provider fields.
+
+Completed generation does not guarantee permanent media storage. A confirmed
+expired download returns HTTP 410 with `video_content_expired`; other unavailable
+files return a safe HTTP 502 error. Getoken can return HTTP 409 for expired media,
+so the downloader makes one bounded read-only query against the original account
+and task before classifying expiry. That query does not follow redirects. It
+never recreates a task or changes successful generation, settlement or charges.
+Users should download and save results promptly; the customer page documents
+this and distinguishes expired files from temporary download errors.
+
 `credentials.minimax_video_protocol` selects `ll2` or `getoken`; an absent or
 empty value retains legacy Getoken behavior. Never infer protocol from the
 hostname. Add a separate LL2 account and retain the old account until its tasks

@@ -3,12 +3,12 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import { useAppStore } from '@/stores/app'
-import { adminVideosAPI, type AdminVideoTask, type AdminVideoTaskListParams, type VideoProcurementStats, type VideoTaskStats } from '@/api/videos'
+import { adminVideosAPI, type AdminVideoTask, type AdminVideoTaskListParams, type VideoProcurementStats, type AdminVideoTaskStats } from '@/api/videos'
 import { videoProviderLabel, videoBillingModeLabel, videoBillingStatusLabel, videoChargeLabel, videoUsageLabel, videoUpstreamCostLabel, videoTaskCanDelete, videoMoneyLabel } from '../videoTaskPresentation'
 
 const appStore = useAppStore()
 const tasks = ref<AdminVideoTask[]>([])
-const stats = ref<VideoTaskStats | null>(null)
+const stats = ref<AdminVideoTaskStats | null>(null)
 const procurementStats = ref<VideoProcurementStats | null>(null)
 const exceptionCounts = ref<Record<string, number>>({})
 const total = ref(0)

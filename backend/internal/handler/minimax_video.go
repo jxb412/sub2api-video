@@ -401,8 +401,6 @@ func (h *OpenAIGatewayHandler) MinimaxVideoContent(c *gin.Context) {
 	}
 	baseURL, token := h.gatewayService.MinimaxVideoAccountCredentials(c.Request.Context(), task.AccountID)
 	if err := h.gatewayService.StreamMinimaxVideoContent(c, task, baseURL, token); err != nil {
-		if !c.Writer.Written() {
-			h.errorResponse(c, http.StatusBadGateway, "upstream_error", "Failed to fetch video content")
-		}
+		h.writeVideoContentError(c, err)
 	}
 }

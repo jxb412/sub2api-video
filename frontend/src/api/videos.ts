@@ -3,8 +3,6 @@ import { apiClient } from './client'
 /** 视频任务（MiniMax H3 / Seedance 等异步视频模型） */
 export interface VideoTask {
   task_id: string
-  upstream_id?: string
-  upstream_model?: string
   provider: string
   model: string
   prompt: string
@@ -14,10 +12,7 @@ export interface VideoTask {
   user_id: number
   api_key_id: number
   group_id: number
-  account_id: number
   error_message?: string
-  upstream_cost_usd: number
-  upstream_cost_reported?: boolean
   billed_cost_usd: number
   billing_mode: string
   input_tokens?: number
@@ -27,9 +22,7 @@ export interface VideoTask {
   created_at: string
   completed_at?: string | null
   deleted_at?: string | null
-  user_email?: string
   group_name?: string
-  account_name?: string
   api_key_name?: string
 }
 
@@ -40,8 +33,6 @@ export interface VideoTaskStats {
   done: number
   error: number
   today: number
-  upstream_cost_usd: number
-  unknown_upstream_cost_count?: number
   billed_cost_usd: number
   success_rate: number
 }
@@ -78,12 +69,24 @@ export interface VideoOperationsHistory {
 
 /** Procurement and execution details are returned only by admin endpoints. */
 export interface AdminVideoTask extends VideoTask {
+  upstream_id?: string
+  upstream_model?: string
+  account_id: number
+  account_name?: string
+  user_email?: string
+  upstream_cost_usd: number
+  upstream_cost_reported?: boolean
   can_retry?: boolean
   retry_unavailable_reason?: string
   procurement?: VideoProcurement
   execution?: VideoExecutionState
   exception_codes?: string[]
   operations_history?: VideoOperationsHistory[]
+}
+
+export interface AdminVideoTaskStats extends VideoTaskStats {
+  upstream_cost_usd: number
+  unknown_upstream_cost_count?: number
 }
 
 export interface VideoProcurementStats {
@@ -160,7 +163,7 @@ export const adminVideosAPI = {
     return data
   },
   async stats(params: AdminVideoTaskListParams = {}) {
-    const { data } = await apiClient.get<{ stats: VideoTaskStats; margin_percent: number | null; procurement?: VideoProcurementStats; exception_counts?: Record<string, number> }>(
+    const { data } = await apiClient.get<{ stats: AdminVideoTaskStats; margin_percent: number | null; procurement?: VideoProcurementStats; exception_counts?: Record<string, number> }>(
       '/admin/videos/stats',
       { params },
     )

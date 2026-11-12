@@ -255,9 +255,6 @@ func MinimaxVideoTaskStatusBody(task MinimaxVideoTask, contentPath string) []byt
 		"model":      task.Model,
 		"created_at": task.CreatedAt,
 	}
-	if task.UpstreamID != "" {
-		out["upstream_id"] = task.UpstreamID
-	}
 	if task.DurationSeconds > 0 {
 		out["duration"] = task.DurationSeconds
 	}
@@ -274,11 +271,10 @@ func MinimaxVideoTaskStatusBody(task MinimaxVideoTask, contentPath string) []byt
 	if task.Error != "" {
 		out["error"] = map[string]any{"message": task.Error, "type": "upstream_error"}
 	}
-	if task.UpstreamCostReported || task.UpstreamCostUSD > 0 {
-		out["usage"] = map[string]any{"upstream_cost_usd": task.UpstreamCostUSD}
-	} else if task.OutputSecondsReported {
+	if task.OutputSecondsReported {
 		out["usage"] = map[string]any{"output_seconds": task.DurationSeconds}
 	}
+	out["billing"] = map[string]any{"mode": task.BillingMode, "billed_cost_usd": task.BilledCostUSD}
 	if task.CompletedAt != "" {
 		out["completed_at"] = task.CompletedAt
 	}

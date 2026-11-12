@@ -1,4 +1,4 @@
-import type { VideoTask } from '@/api/videos'
+import type { AdminVideoTask, VideoTask } from '@/api/videos'
 
 export function videoProviderLabel(provider: string): string {
   return ({ minimax: 'MiniMax H3', seedance: 'Seedance / BytePlus' } as Record<string, string>)[provider] ?? provider
@@ -27,7 +27,7 @@ export function videoUsageLabel(task: VideoTask): string {
     : `${task.resolution || '—'} · ${task.duration_seconds || '—'}s`
 }
 
-export function videoUpstreamCostLabel(task: VideoTask): string {
+export function videoUpstreamCostLabel(task: Pick<AdminVideoTask, 'upstream_cost_usd' | 'upstream_cost_reported'>): string {
   if (!task.upstream_cost_reported && !(task.upstream_cost_usd > 0)) return '未提供'
   return videoMoneyLabel(task.upstream_cost_usd)
 }

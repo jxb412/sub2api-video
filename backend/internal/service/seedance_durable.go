@@ -608,12 +608,18 @@ func videoTaskNeedsProviderMetadata(task MinimaxVideoTask) bool {
 func SeedanceVideoStatusBody(task MinimaxVideoTask, contentPath string) []byte {
 	out := make(map[string]any)
 	if len(task.ProviderResponse) > 0 {
-		_ = json.Unmarshal(task.ProviderResponse, &out)
+		var metadata map[string]any
+		_ = json.Unmarshal(task.ProviderResponse, &metadata)
+		// Provider payloads may include procurement charges, account identifiers
+		// or signed URLs. Only documented public scalar metadata is forwarded.
+		for _, key := range []string{"ratio", "fps", "seed", "generate_audio", "draft", "service_tier", "execution_expires_after"} {
+			switch value := metadata[key].(type) {
+			case string, float64, bool:
+				out[key] = value
+			}
+		}
 	}
 	out["id"], out["model"] = task.ID, task.Model
-	if task.UpstreamID != "" {
-		out["upstream_id"] = task.UpstreamID
-	}
 	status := map[string]string{MinimaxVideoStatusQueued: "queued", MinimaxVideoStatusProcessing: "running", MinimaxVideoStatusDone: "succeeded", MinimaxVideoStatusError: "failed"}[task.Status]
 	out["status"] = status
 	if created, err := time.Parse(time.RFC3339Nano, task.CreatedAt); err == nil {

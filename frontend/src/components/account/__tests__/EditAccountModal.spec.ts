@@ -1471,6 +1471,7 @@ describe('EditAccountModal', () => {
   it('preserves Seedance when exactly two endpoint capabilities are selected', async () => {
     const account = buildAccount()
     account.credentials.openai_capabilities = ['chat_completions', 'seedance']
+    account.credentials.base_url = 'https://ark.ap-southeast.bytepluses.com/api/v3'
     updateAccountMock.mockReset()
     checkMixedChannelRiskMock.mockReset()
     checkMixedChannelRiskMock.mockResolvedValue({ has_risk: false })
@@ -1479,6 +1480,94 @@ describe('EditAccountModal', () => {
     expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-seedance"]').element.checked).toBe(true)
     await wrapper.get('form#edit-account-form').trigger('submit.prevent')
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual(['chat_completions', 'seedance'])
+  })
+
+  it('loads video retry customization and explicitly clears it when defaults are restored', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['seedance']
+    account.credentials.base_url = 'https://ark.ap-southeast.bytepluses.com/api/v3'
+    account.extra = { quota_limit: 10, video_execution_policy: { request_timeout_seconds: 60, task_timeout_seconds: 7200, retry_enabled: false, max_retries: 0, retry_interval_seconds: 45 } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="video-policy-custom"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="video-policy-retry"]').element.checked).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="video-policy-max_retries"]').element.value).toBe('0')
+    await wrapper.get('[data-testid="video-policy-custom"]').setValue(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ quota_limit: 10, video_execution_policy: null })
+    wrapper.unmount()
+  })
+
+  it('preserves MiniMax and an unknown capability while editing account metadata', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['minimax_video', 'future_video']
+    account.credentials.base_url = 'https://video-provider.example/v1'
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="openai-endpoint-capability-minimax_video"]').element.checked).toBe(true)
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="minimax-video-protocol"]').element.value).toBe('getoken')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.openai_capabilities).toEqual(['minimax_video', 'future_video'])
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('minimax_video_protocol')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.base_url).toBe('https://video-provider.example/v1')
+    wrapper.unmount()
+  })
+
+  it('loads an existing LL2 account without changing its protocol or custom URL', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['minimax_video']
+    account.credentials.minimax_video_protocol = 'll2'
+    account.credentials.base_url = 'https://relay.example/ll2/prefix'
+    account.credentials_status = { has_api_key: true }
+    delete account.credentials.api_key
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get<HTMLSelectElement>('[data-testid="minimax-video-protocol"]').element.value).toBe('ll2')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      minimax_video_protocol: 'll2', base_url: 'https://relay.example/ll2/prefix',
+    })
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('api_key')
+    wrapper.unmount()
+  })
+
+  it('requires a new API key after switching H3 protocol even when a saved key exists', async () => {
+    const account = buildAccount()
+    account.credentials.openai_capabilities = ['minimax_video']
+    account.credentials.base_url = 'https://relay.example/custom/v1'
+    account.credentials_status = { has_api_key: true }
+    delete account.credentials.api_key
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    const key = wrapper.get<HTMLInputElement>('form#edit-account-form input[type="password"]')
+    await key.setValue('old-provider-key')
+    await wrapper.get('[data-testid="minimax-video-protocol"]').setValue('ll2')
+    expect(key.element.value).toBe('')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    await key.setValue('new-ll2-key')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).toMatchObject({
+      minimax_video_protocol: 'll2', base_url: 'https://relay.example/custom/v1', api_key: 'new-ll2-key',
+    })
+    expect(account.credentials.base_url).toBe('https://relay.example/custom/v1')
+    expect(account.credentials).not.toHaveProperty('minimax_video_protocol')
+    wrapper.unmount()
+  })
+
+  it('keeps ordinary OpenAI accounts free of MiniMax protocol settings', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.find('[data-testid="minimax-video-protocol"]').exists()).toBe(false)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('minimax_video_protocol')
+    wrapper.unmount()
   })
 
   it('keeps at least one OpenAI APIKey endpoint capability selected', async () => {

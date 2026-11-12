@@ -89,7 +89,7 @@ func (s *FrontendServer) Middleware() gin.HandlerFunc {
 		path := c.Request.URL.Path
 
 		// Skip API routes
-		if shouldBypassEmbeddedFrontend(path) {
+		if shouldBypassEmbeddedFrontendRequest(c.Request.Method, path) {
 			c.Next()
 			return
 		}
@@ -311,7 +311,7 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
 
-		if shouldBypassEmbeddedFrontend(path) {
+		if shouldBypassEmbeddedFrontendRequest(c.Request.Method, path) {
 			c.Next()
 			return
 		}
@@ -350,6 +350,15 @@ func tryServeOverrideFile(c *gin.Context, overrideDir, cleanPath string) bool {
 	c.File(filePath)
 	c.Abort()
 	return true
+}
+
+func shouldBypassEmbeddedFrontendRequest(method, path string) bool {
+	// The user panel owns GET /videos. The bare OpenAI-compatible alias only
+	// registers POST /videos; task status/content live under /videos/:id.
+	if (method == http.MethodGet || method == http.MethodHead) && strings.TrimSpace(path) == "/videos" {
+		return false
+	}
+	return shouldBypassEmbeddedFrontend(path)
 }
 
 func shouldBypassEmbeddedFrontend(path string) bool {

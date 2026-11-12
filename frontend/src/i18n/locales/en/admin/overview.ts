@@ -1091,15 +1091,31 @@ export default {
         notConfigured: 'Not configured'
       },
       videoPricing: {
+        billingMode: 'Video billing mode',
+        usageTokens: 'Actual usage tokens (Seedance)',
+        seedancePreset: 'Seedance / BytePlus (OpenAI compatible)',
+        seedanceSetupHint: 'Seedance uses an OpenAI-compatible group. Bind an API key account with the Seedance capability and configure its models and prices.',
+        allowGeneration: 'Allow video generation',
+        tokenPricingHint: 'Seedance settles actual upstream input/output tokens, never an estimate from video duration. Configure explicit token rates in model or channel pricing; missing rates reject creation. Per-second fields do not apply to token billing.',
+        accountPresetTitle: 'Video account setup',
+        providerURLRequired: 'Enter a valid provider base URL for this video account. The default OpenAI origin, embedded credentials, query strings and fragments are not supported.',
+        accountPresetHint: 'Presets select OpenAI API Key, video capability and models. Enter your provider key, verify its base URL and model mapping, and bind a video group. MiniMax H3 requires a provider supporting this relay protocol.',
+        setupGuide: 'Video configuration and API guide',
+        localPrice: 'Configured price per second',
+        upstreamCost: 'Upstream cost',
+        billingModeHint: 'Per-second mode requires an explicit video price; token mode uses actual tokens and model rates; upstream-cost mode uses the provider-reported amount. Modes do not silently fall back to each other.',
+        resolutionTiers: 'Video resolution billing tiers',
+        resolutionTiersHint: 'Comma-separated output resolution:billing tier pairs. Targets: 480p, 720p or 1080p. 768p defaults to the 720p tier.',
+        invalidResolutionTiers: 'Invalid resolution mapping. Use 768p:720p and separate multiple mappings with commas.',
         title: 'Video Generation Pricing',
         description:
-          'Configure Grok video generation prices in USD per second of output video. Leave empty to use the default per-second rates (grok-imagine-video: $0.05/s 480p, $0.07/s 720p; video-1.5: $0.08/s 480p, $0.14/s 720p, $0.25/s 1080p).',
+          'MiniMax H3 and Seedance support explicit billing modes. Per-second prices use USD/s; token rates are configured in model pricing. Grok retains its own default per-second prices.',
         modelOverridesTitle: 'Per-model video price overrides',
         modelOverridesDescription: 'Each populated cell overrides the flat resolution price for that model family. Preview and legacy aliases for video-1.5 use the same family; empty cells fall back to the flat resolution price.',
         independentMultiplier: 'Use independent video multiplier',
         videoMultiplier: 'Video multiplier',
         modeHint:
-          'Videos are billed per second: per-second price × duration (1-15s, default 8s). By default the current effective group multiplier applies; independent mode uses the video multiplier instead.',
+          'The selected billing mode determines the amount, then the effective group multiplier applies. Independent mode uses the video multiplier. Failed tasks are not charged; successful tasks settle once.',
         finalPricePreview: 'Final per-second price preview',
         notConfigured: 'Not configured'
       },

@@ -1,14 +1,35 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
+
+// ResolveMinimaxVideoRateMultiplier follows the same user/group override and
+// independent video-rate policy as the normal usage billing path.
+func (s *OpenAIGatewayService) ResolveMinimaxVideoRateMultiplier(ctx context.Context, key *APIKey) float64 {
+	rate := 1.0
+	if s.cfg != nil && s.cfg.Default.RateMultiplier > 0 {
+		rate = s.cfg.Default.RateMultiplier
+	}
+	if key != nil && key.Group != nil {
+		rate = key.Group.RateMultiplier
+		if key.GroupID != nil {
+			rate = s.ResolveUserGroupRateMultiplier(ctx, key.UserID, *key.GroupID, rate)
+		}
+	}
+	return resolveVideoRateMultiplier(key, rate)
+}
 
 // MiniMax H3 (and other OpenAI-shaped async video providers) integration.
 //
@@ -51,31 +72,58 @@ func (e GrokMediaEndpoint) IsMinimaxVideo() bool {
 }
 
 // MinimaxVideoTask is the persisted state of one gateway-owned video job.
-// It is stored through the gateway cache (same blob store as the Grok pending
-// billing snapshot) so that an in-flight task survives process restarts.
+// Its billing snapshot and state are stored in PostgreSQL before submission;
+// completed jobs and pending settlements remain available across restarts.
 type MinimaxVideoTask struct {
-	ID              string  `json:"id"`
-	UpstreamID      string  `json:"upstream_id,omitempty"`
-	Status          string  `json:"status"`
-	Model           string  `json:"model"`
-	UpstreamModel   string  `json:"upstream_model,omitempty"`
-	Prompt          string  `json:"prompt,omitempty"`
-	DurationSeconds int     `json:"duration_seconds,omitempty"`
-	Resolution      string  `json:"resolution,omitempty"`
-	UpstreamCostUSD float64 `json:"upstream_cost_usd,omitempty"`
+	ExecutionPolicy          *VideoExecutionPolicy `json:"execution_policy,omitempty"`
+	ID                       string                `json:"id"`
+	Provider                 string                `json:"provider,omitempty"`
+	UpstreamID               string                `json:"upstream_id,omitempty"`
+	UpstreamProtocol         string                `json:"upstream_protocol,omitempty"`
+	UpstreamBaseURL          string                `json:"upstream_base_url,omitempty"`
+	UpstreamCredentialHash   string                `json:"upstream_credential_hash,omitempty"`
+	UpstreamRequestBody      json.RawMessage       `json:"upstream_request_body,omitempty"`
+	RequestedDurationSeconds int                   `json:"requested_duration_seconds,omitempty"`
+	OutputSecondsReported    bool                  `json:"output_seconds_reported,omitempty"`
+	Ratio                    string                `json:"ratio,omitempty"`
+	Status                   string                `json:"status"`
+	Model                    string                `json:"model"`
+	BillingModel             string                `json:"billing_model,omitempty"`
+	UpstreamModel            string                `json:"upstream_model,omitempty"`
+	Prompt                   string                `json:"prompt,omitempty"`
+	DurationSeconds          int                   `json:"duration_seconds,omitempty"`
+	Resolution               string                `json:"resolution,omitempty"`
+	UpstreamCostUSD          float64               `json:"upstream_cost_usd,omitempty"`
+	UpstreamCostReported     bool                  `json:"upstream_cost_reported,omitempty"`
+	InputTokens              int                   `json:"input_tokens,omitempty"`
+	OutputTokens             int                   `json:"output_tokens,omitempty"`
+	UsageReported            bool                  `json:"usage_reported,omitempty"`
+	InputPricePerToken       float64               `json:"input_price_per_token,omitempty"`
+	OutputPricePerToken      float64               `json:"output_price_per_token,omitempty"`
+	TokenPricingConfigured   bool                  `json:"token_pricing_configured,omitempty"`
+	ProviderResponse         json.RawMessage       `json:"provider_response,omitempty"`
+	ResolutionPrices         map[string]float64    `json:"resolution_prices,omitempty"`
+	ResolutionTiers          map[string]string     `json:"resolution_tiers,omitempty"`
 	// 计费快照：提交时固定，避免任务完成后分组改价导致对不上账。
-	BillingMode    string   `json:"billing_mode,omitempty"`
-	PricePerSecond float64  `json:"price_per_second,omitempty"`
-	RateMultiplier float64  `json:"rate_multiplier,omitempty"`
-	BilledCostUSD  float64  `json:"billed_cost_usd,omitempty"`
-	VideoURL        string  `json:"video_url,omitempty"`
-	Error           string  `json:"error,omitempty"`
-	UserID          int64   `json:"user_id,omitempty"`
-	APIKeyID        int64   `json:"api_key_id,omitempty"`
-	GroupID         int64   `json:"group_id,omitempty"`
-	AccountID       int64   `json:"account_id,omitempty"`
-	CreatedAt       string  `json:"created_at,omitempty"`
-	CompletedAt     string  `json:"completed_at,omitempty"`
+	BillingMode        string                       `json:"billing_mode,omitempty"`
+	PricePerSecond     float64                      `json:"price_per_second,omitempty"`
+	PriceConfigured    bool                         `json:"price_configured,omitempty"`
+	BillingSnapshot    *MinimaxVideoBillingSnapshot `json:"billing_snapshot,omitempty"`
+	AdmissionCost      float64                      `json:"admission_cost,omitempty"`
+	AdmissionCostKnown bool                         `json:"admission_cost_known,omitempty"`
+	RateMultiplier     float64                      `json:"rate_multiplier,omitempty"`
+	BilledCostUSD      float64                      `json:"billed_cost_usd,omitempty"`
+	VideoURL           string                       `json:"video_url,omitempty"`
+	Error              string                       `json:"error,omitempty"`
+	UserID             int64                        `json:"user_id,omitempty"`
+	APIKeyID           int64                        `json:"api_key_id,omitempty"`
+	GroupID            int64                        `json:"group_id,omitempty"`
+	AccountID          int64                        `json:"account_id,omitempty"`
+	CreatedAt          string                       `json:"created_at,omitempty"`
+	CompletedAt        string                       `json:"completed_at,omitempty"`
+	ExpiresAt          string                       `json:"expires_at,omitempty"`
+	LastPolledAt       string                       `json:"last_polled_at,omitempty"`
+	CreateStarted      bool                         `json:"create_started,omitempty"`
 }
 
 // IsTerminal reports whether the task can no longer change state.
@@ -91,6 +139,8 @@ type MinimaxVideoRequestInfo struct {
 	DurationSeconds int
 	Resolution      string
 	InputImageURLs  []string
+	Ratio           string
+	Content         json.RawMessage
 }
 
 // ParseMinimaxVideoRequest reads the OpenAI-ish video request body that clients
@@ -98,35 +148,93 @@ type MinimaxVideoRequestInfo struct {
 // "content" array are accepted.
 func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 	var info MinimaxVideoRequestInfo
-	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
+	if !utf8.Valid(body) || !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return info, fmt.Errorf("request body must be a JSON object")
 	}
-	model := strings.TrimSpace(gjson.GetBytes(body, "model").String())
-	if model == "" {
+	if _, err := ll2MinimaxJSONObject(body); err != nil {
+		return info, err
+	}
+	allowed := map[string]bool{"model": true, "prompt": true, "duration": true, "seconds": true, "duration_seconds": true, "resolution": true, "size": true, "output_resolution": true, "content": true, "image_url": true, "ratio": true}
+	var unknown string
+	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+		if !allowed[key.String()] {
+			unknown = key.String()
+			return false
+		}
+		return true
+	})
+	if unknown != "" {
+		return info, fmt.Errorf("unsupported MiniMax video parameter %q", unknown)
+	}
+	modelValue := gjson.GetBytes(body, "model")
+	model := strings.TrimSpace(modelValue.String())
+	if modelValue.Type != gjson.String || model == "" {
 		return info, fmt.Errorf("model is required")
 	}
 	info.Model = model
-	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
-	if d := gjson.GetBytes(body, "duration"); d.Exists() {
-		info.DurationSeconds = int(d.Int())
-	} else if d := gjson.GetBytes(body, "seconds"); d.Exists() {
-		info.DurationSeconds = int(d.Int())
+	if prompt := gjson.GetBytes(body, "prompt"); prompt.Exists() && prompt.Type != gjson.String {
+		return info, fmt.Errorf("prompt must be a string")
 	}
-	if d := gjson.GetBytes(body, "duration_seconds"); d.Exists() && info.DurationSeconds <= 0 {
-		info.DurationSeconds = int(d.Int())
+	info.Prompt = strings.TrimSpace(gjson.GetBytes(body, "prompt").String())
+	if ratio := gjson.GetBytes(body, "ratio"); ratio.Exists() {
+		if ratio.Type != gjson.String || strings.TrimSpace(ratio.String()) == "" {
+			return info, fmt.Errorf("ratio must be a non-empty string")
+		}
+		info.Ratio = strings.TrimSpace(ratio.String())
+	}
+	info.DurationSeconds = 5
+	durationSet := false
+	for _, field := range []string{"duration", "seconds", "duration_seconds"} {
+		if value := gjson.GetBytes(body, field); value.Exists() {
+			duration, err := strconv.Atoi(value.String())
+			if (value.Type != gjson.Number && value.Type != gjson.String) || err != nil || duration <= 0 || duration > 120 {
+				return info, fmt.Errorf("%s must be an integer between 1 and 120", field)
+			}
+			info.DurationSeconds = duration
+			if durationSet {
+				return info, fmt.Errorf("use only one duration field")
+			}
+			durationSet = true
+		}
 	}
 	info.Resolution = strings.TrimSpace(firstNonEmptyString(
 		gjson.GetBytes(body, "resolution").String(),
 		gjson.GetBytes(body, "size").String(),
 		gjson.GetBytes(body, "output_resolution").String(),
 	))
+	resolutionCount := 0
+	for _, field := range []string{"resolution", "size", "output_resolution"} {
+		value := gjson.GetBytes(body, field)
+		if value.Exists() {
+			resolutionCount++
+			if value.Type != gjson.String {
+				return info, fmt.Errorf("resolution must be a string")
+			}
+		}
+	}
+	if resolutionCount > 1 {
+		return info, fmt.Errorf("use only one resolution field")
+	}
 
 	// Multimodal form: {"content":[{"type":"text","text":"..."},{"type":"image_url",...}]}
-	if content := gjson.GetBytes(body, "content"); content.IsArray() {
+	if content := gjson.GetBytes(body, "content"); content.Exists() {
+		if !content.IsArray() || len(content.Array()) == 0 {
+			return info, fmt.Errorf("content must be a non-empty array")
+		}
+		if gjson.GetBytes(body, "prompt").Exists() || gjson.GetBytes(body, "image_url").Exists() {
+			return info, fmt.Errorf("use content or prompt/image_url, not both")
+		}
+		info.Content = json.RawMessage(content.Raw)
 		var texts []string
 		for _, item := range content.Array() {
+			if !item.IsObject() {
+				return info, fmt.Errorf("content items must be objects")
+			}
 			switch strings.TrimSpace(item.Get("type").String()) {
 			case "text":
+				if item.Get("text").Type != gjson.String {
+					return info, fmt.Errorf("content text must be a string")
+				}
 				if t := strings.TrimSpace(item.Get("text").String()); t != "" {
 					texts = append(texts, t)
 				}
@@ -134,14 +242,39 @@ func ParseMinimaxVideoRequest(body []byte) (MinimaxVideoRequestInfo, error) {
 				if url := strings.TrimSpace(item.Get("image_url.url").String()); url != "" {
 					info.InputImageURLs = append(info.InputImageURLs, url)
 				}
+			case "video_url", "audio_url":
+				// LL2 validates media URLs and roles after account selection.
+			default:
+				return info, fmt.Errorf("unsupported video content type")
 			}
 		}
 		if len(texts) > 0 && info.Prompt == "" {
 			info.Prompt = strings.Join(texts, "\n")
 		}
 	}
-	if url := strings.TrimSpace(gjson.GetBytes(body, "image_url").String()); url != "" {
-		info.InputImageURLs = append(info.InputImageURLs, url)
+	images := gjson.GetBytes(body, "image_url")
+	if images.Exists() {
+		if images.IsArray() {
+			for _, image := range images.Array() {
+				if image.Type != gjson.String || strings.TrimSpace(image.String()) == "" {
+					return info, fmt.Errorf("image_url must contain URL strings")
+				}
+				info.InputImageURLs = append(info.InputImageURLs, strings.TrimSpace(image.String()))
+			}
+		} else if images.Type == gjson.String && strings.TrimSpace(images.String()) != "" {
+			info.InputImageURLs = append(info.InputImageURLs, strings.TrimSpace(images.String()))
+		} else {
+			return info, fmt.Errorf("image_url must be a URL string or array")
+		}
+	}
+	if strings.EqualFold(info.Model, "MiniMax-H3") {
+		if info.Resolution == "" {
+			info.Resolution = "768p"
+		}
+		if !strings.EqualFold(info.Resolution, "768p") {
+			return info, fmt.Errorf("MiniMax-H3 supports only 768p resolution")
+		}
+		info.Resolution = "768p"
 	}
 	if info.Prompt == "" && len(info.InputImageURLs) == 0 {
 		return info, fmt.Errorf("prompt is required")
@@ -157,6 +290,9 @@ func (i MinimaxVideoRequestInfo) ModerationBody() []byte {
 		return nil
 	}
 	payload := map[string]any{"model": i.Model}
+	if len(i.Content) > 0 {
+		payload["content"] = i.Content
+	}
 	if i.Prompt != "" {
 		payload["prompt"] = i.Prompt
 	}
@@ -164,6 +300,13 @@ func (i MinimaxVideoRequestInfo) ModerationBody() []byte {
 		payload["image_url"] = i.InputImageURLs[0]
 	} else if len(i.InputImageURLs) > 1 {
 		payload["image_url"] = i.InputImageURLs
+	}
+	if len(i.InputImageURLs) > 0 {
+		images := make([]map[string]any, 0, len(i.InputImageURLs))
+		for _, url := range i.InputImageURLs {
+			images = append(images, map[string]any{"type": "image_url", "image_url": map[string]string{"url": url}})
+		}
+		payload["images"] = images
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -193,6 +336,10 @@ func MinimaxVideoBaseURL(account *Account) string {
 // BuildMinimaxVideoURL builds the upstream URL for one endpoint/task.
 func BuildMinimaxVideoURL(base string, endpoint GrokMediaEndpoint, taskID string) (string, error) {
 	base = strings.TrimRight(base, "/")
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid MiniMax video base URL")
+	}
 	switch endpoint {
 	case MinimaxVideoEndpointCreate:
 		return base + minimaxVideoPathGenerations, nil
@@ -218,6 +365,14 @@ func BuildMinimaxVideoURL(base string, endpoint GrokMediaEndpoint, taskID string
 // shape: the model is mapped through the account mapping and only documented
 // fields are forwarded, so clients cannot inject arbitrary upstream options.
 func BuildMinimaxVideoUpstreamBody(info MinimaxVideoRequestInfo, upstreamModel string) ([]byte, error) {
+	if info.Ratio != "" {
+		return nil, fmt.Errorf("ratio requires the LL2 video protocol")
+	}
+	for _, item := range gjson.ParseBytes(info.Content).Array() {
+		if kind := item.Get("type").String(); (kind != "text" && kind != "image_url") || item.Get("role").Exists() {
+			return nil, fmt.Errorf("media roles, video and audio references require the LL2 video protocol")
+		}
+	}
 	model := strings.TrimSpace(upstreamModel)
 	if model == "" {
 		model = info.Model
@@ -251,7 +406,7 @@ func BuildMinimaxVideoUpstreamBody(info MinimaxVideoRequestInfo, upstreamModel s
 // shape, so one parser covers both.
 func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 	var task MinimaxVideoTask
-	if !gjson.ValidBytes(body) {
+	if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() {
 		return task, fmt.Errorf("upstream returned invalid JSON")
 	}
 	root := gjson.ParseBytes(body)
@@ -273,6 +428,7 @@ func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 	}
 	if cost := root.Get("getoken.cost_usd"); cost.Exists() {
 		task.UpstreamCostUSD = parseFlexibleFloat(cost)
+		task.UpstreamCostReported = validVideoCost(cost)
 	}
 	if errField := root.Get("error"); errField.Exists() && errField.Type != gjson.Null {
 		if msg := strings.TrimSpace(errField.Get("message").String()); msg != "" {
@@ -281,6 +437,19 @@ func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 			task.Error = s
 		}
 	}
+	switch task.Status {
+	case "succeeded", "completed", "success":
+		task.Status = MinimaxVideoStatusDone
+	case "failed", "cancelled", "canceled", "expired":
+		task.Status = MinimaxVideoStatusError
+	case "running", "in_progress":
+		task.Status = MinimaxVideoStatusProcessing
+	case "pending":
+		task.Status = MinimaxVideoStatusQueued
+	}
+	if task.Error != "" && task.Status != MinimaxVideoStatusDone {
+		task.Status = MinimaxVideoStatusError
+	}
 	if task.Status == "" {
 		// A body that only carries a video URL is implicitly done.
 		if task.VideoURL != "" {
@@ -288,6 +457,12 @@ func ParseMinimaxVideoUpstreamResponse(body []byte) (MinimaxVideoTask, error) {
 		} else {
 			task.Status = MinimaxVideoStatusProcessing
 		}
+	}
+	if task.Status != MinimaxVideoStatusDone && task.Status != MinimaxVideoStatusError && task.Status != MinimaxVideoStatusQueued && task.Status != MinimaxVideoStatusProcessing {
+		return task, fmt.Errorf("unknown MiniMax video status")
+	}
+	if task.Status == MinimaxVideoStatusDone && task.VideoURL == "" {
+		return task, fmt.Errorf("completed MiniMax response is missing video URL")
 	}
 	return task, nil
 }
@@ -310,16 +485,9 @@ func MinimaxVideoTaskTTL(fallback time.Duration) time.Duration {
 // parseFlexibleFloat accepts both numeric and string-encoded floats, which the
 // upstream mixes (cost_usd arrives as a decimal string).
 func parseFlexibleFloat(value gjson.Result) float64 {
-	if value.Type == gjson.Number {
-		return value.Float()
-	}
-	s := strings.TrimSpace(value.String())
-	if s == "" {
+	parsed, err := strconv.ParseFloat(strings.TrimSpace(value.String()), 64)
+	if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
 		return 0
 	}
-	var out float64
-	if _, err := fmt.Sscanf(s, "%f", &out); err != nil {
-		return 0
-	}
-	return out
+	return parsed
 }

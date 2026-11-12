@@ -70,6 +70,11 @@ func ResolveVideoBillingTier(resolution string, overrides map[string]string) str
 			}
 		}
 	}
+	// MiniMax H3's native 768p output belongs to the HD price tier. It must
+	// not silently use the cheaper 480p fallback when no override is set.
+	if key == "768" || key == "768p" {
+		return VideoBillingResolution720P
+	}
 	return NormalizeVideoBillingResolutionOrDefault(resolution)
 }
 

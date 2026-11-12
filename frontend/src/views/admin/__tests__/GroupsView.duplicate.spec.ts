@@ -217,6 +217,25 @@ describe('GroupsView duplicate action', () => {
     vi.restoreAllMocks()
   })
 
+  it('creates a Seedance preset as an OpenAI group with media permission and token billing', async () => {
+    vi.mocked(adminAPI.groups.create).mockResolvedValue({ ...sourceGroup, id: 44 })
+    const wrapper = mountView()
+    await flushPromises()
+    const createButton = wrapper.findAll('button').find(button => button.text() === 'admin.groups.createGroup')!
+    await createButton.trigger('click')
+    const platform = wrapper.findComponent('[data-tour="group-form-platform"]')
+    platform.vm.$emit('update:modelValue', 'seedance')
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('[data-testid="create-allow-video-generation"]').element.checked).toBe(true)
+    expect(wrapper.text()).toContain('admin.groups.videoPricing.tokenPricingHint')
+    await wrapper.get('#create-group-form').trigger('submit')
+    await flushPromises()
+    expect(adminAPI.groups.create).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'openai', allow_image_generation: true, video_billing_mode: 'usage_tokens', name: 'Seedance / BytePlus',
+    }))
+    wrapper.unmount()
+  })
+
   it('duplicates the selected group, reports success, and refreshes the list', async () => {
     const wrapper = mountView()
     await flushPromises()

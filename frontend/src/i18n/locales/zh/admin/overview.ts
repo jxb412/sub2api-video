@@ -1088,15 +1088,31 @@ export default {
         notConfigured: '未配置'
       },
       videoPricing: {
+        billingMode: '视频计费模式',
+        usageTokens: '按实际用量 Token 计费（Seedance）',
+        seedancePreset: 'Seedance / BytePlus（OpenAI 兼容）',
+        seedanceSetupHint: 'Seedance 使用 OpenAI 兼容分组。请绑定已启用 Seedance 能力的 API Key 账号，并配置可用模型及对应价格。',
+        allowGeneration: '允许视频生成',
+        tokenPricingHint: 'Seedance 按上游实际返回的输入/输出 Token 结算，不按秒估算。请在模型定价或通道模型价格中明确设置 Token 单价；未配置价格时拒绝创建任务。下方秒单价不用于 Token 计费。',
+        accountPresetTitle: '视频账号快速配置',
+        providerURLRequired: '请为视频账号填写有效的供应商 Base URL，不能使用默认 OpenAI 地址，也不能包含密码、查询参数或片段。',
+        accountPresetHint: '预设会选择 OpenAI API Key 类型、视频能力和模型。还需填写供应商密钥、确认供应商地址与模型映射，并绑定对应视频分组。MiniMax H3 请填写支持该转发协议的供应商地址。',
+        setupGuide: '查看视频配置与调用文档',
+        localPrice: '按配置的秒单价',
+        upstreamCost: '跟随上游成本',
+        billingModeHint: '按秒模式使用明确配置的秒单价；Token 模式使用实际上游 Token 与模型价格；上游成本模式使用供应商回传金额。不同模式不自动替代，请先配置价格。',
+        resolutionTiers: '视频分辨率计费档位',
+        resolutionTiersHint: '以逗号分隔「输出分辨率:计费档位」。目标档位为 480p、720p 或 1080p；768p 默认按 720p 计价。',
+        invalidResolutionTiers: '分辨率映射格式有误，请使用 768p:720p；多个映射以英文逗号分隔。',
         title: '视频生成计费',
         description:
-          '配置 Grok 视频生成的每秒单价（USD/秒），留空则使用默认每秒价（grok-imagine-video：480p $0.05/s、720p $0.07/s；video-1.5：480p $0.08/s、720p $0.14/s、1080p $0.25/s）',
+          'MiniMax H3 和 Seedance 可选择不同计费模式。秒单价单位为 USD/秒，Token 单价在模型定价中配置。Grok 沿用自身每秒默认价格。',
         modelOverridesTitle: '按模型覆盖视频价格',
         modelOverridesDescription: '已填写的单元格会覆盖该模型族的平面分辨率价格。video-1.5 的 preview 与 legacy 别名共用同一模型族；留空则回退到平面分辨率价格。',
         independentMultiplier: '视频倍率独立',
         videoMultiplier: '视频独立倍率',
         modeHint:
-          '视频按秒计费：费用 = 每秒价格 × 时长（1-15 秒，未指定默认 8 秒）。默认叠加当前分组有效倍率；开启独立倍率后改用视频独立倍率。',
+          '结算费用按所选模式计算，再乘以当前分组有效倍率；开启独立倍率后改用视频独立倍率。失败任务不扣费，成功任务只结算一次。',
         finalPricePreview: '最终每秒价格预览',
         notConfigured: '未配置'
       },

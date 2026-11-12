@@ -1,21 +1,21 @@
 package service
 
 import (
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
-// 视频计费配置通过环境变量提供，避免任何 ORM/schema 改动：
+// 环境变量为未配置分组的调用方提供默认值；分组显式配置优先：
 //
 //	VIDEO_BILLING_MODE=local_price | upstream_cost
-//	VIDEO_PRICE_MINIMAX_H3_720P=0.10        （也可用统一前缀覆盖单价）
 //	VIDEO_RESOLUTION_TIERS=768p:720p,1024p:1080p
 //
-// 分组级的价格表（groups.video_model_prices）仍然优先生效；环境变量只在其
-// 未配置时兜底，并承载「计费模式」与「档位映射」两个全局开关。
+// 分组级价格、模式和分辨率映射持久化在 groups 表。
 const (
-	envVideoBillingMode  = "VIDEO_BILLING_MODE"
-	envVideoTiers        = "VIDEO_RESOLUTION_TIERS"
+	envVideoBillingMode = "VIDEO_BILLING_MODE"
+	envVideoTiers       = "VIDEO_RESOLUTION_TIERS"
 )
 
 // VideoBillingSettings 是运行时生效的视频计费配置。
@@ -39,8 +39,8 @@ func VideoBillingSettingsFromEnv() VideoBillingSettings {
 				continue
 			}
 			from := strings.ToLower(strings.TrimSpace(parts[0]))
-			to := strings.ToLower(strings.TrimSpace(parts[1]))
-			if from == "" || to == "" {
+			to, ok := LookupVideoBillingResolution(parts[1])
+			if !videoResolutionSourcePattern.MatchString(from) || !ok {
 				continue
 			}
 			settings.Tiers[from] = to
@@ -66,11 +66,37 @@ func VideoBillingSettingsFor(group *Group) VideoBillingSettings {
 			merged[k] = v
 		}
 		for k, v := range group.VideoResolutionTiers {
-			merged[strings.ToLower(strings.TrimSpace(k))] = stdv(v)
+			if tier, ok := LookupVideoBillingResolution(v); ok {
+				merged[strings.ToLower(strings.TrimSpace(k))] = tier
+			}
 		}
 		settings.Tiers = merged
 	}
 	return settings
 }
 
-func stdv(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+var videoResolutionSourcePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+// NormalizeVideoResolutionTiers validates administrator input instead of silently
+// turning a misspelled expensive tier into the cheapest price.
+func NormalizeVideoResolutionTiers(input map[string]string) (map[string]string, error) {
+	if len(input) > 100 {
+		return nil, fmt.Errorf("video_resolution_tiers must contain at most 100 entries")
+	}
+	result := make(map[string]string, len(input))
+	for source, target := range input {
+		key := strings.ToLower(strings.TrimSpace(source))
+		if !videoResolutionSourcePattern.MatchString(key) {
+			return nil, fmt.Errorf("invalid video resolution %q", source)
+		}
+		tier, ok := LookupVideoBillingResolution(target)
+		if !ok {
+			return nil, fmt.Errorf("invalid video billing tier %q: expected 480p, 720p or 1080p", target)
+		}
+		if previous, exists := result[key]; exists && previous != tier {
+			return nil, fmt.Errorf("conflicting video billing tiers for %q", key)
+		}
+		result[key] = tier
+	}
+	return result, nil
+}

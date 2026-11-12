@@ -514,8 +514,8 @@
             t("admin.groups.form.platform")
           }}</label>
           <Select
-            v-model="createForm.platform"
-            :options="platformOptions"
+            v-model="createPlatformSelection"
+            :options="createPlatformOptions"
             data-tour="group-form-platform"
             @change="createForm.copy_accounts_from_group_ids = []"
           />
@@ -1068,6 +1068,14 @@
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
             {{ t(videoPricingI18nKey("description")) }}
           </p>
+          <label class="mb-3 flex items-center gap-2 text-sm">
+            <input v-model="createForm.allow_image_generation" type="checkbox" class="rounded border-gray-300" data-testid="create-allow-video-generation" />
+            {{ t("admin.groups.videoPricing.allowGeneration") }}
+          </label>
+          <p v-if="createForm.platform === 'openai' || createForm.platform === 'composite'" class="mb-3 text-xs text-gray-500">
+            {{ t("admin.groups.videoPricing.seedanceSetupHint") }}
+            <router-link to="/admin/videos" class="text-indigo-600 hover:underline">{{ t("admin.groups.videoPricing.setupGuide") }}</router-link>
+          </p>
           <div class="mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
@@ -1094,7 +1102,7 @@
               placeholder="1"
             />
           </div>
-          <div class="grid grid-cols-3 gap-3">
+          <div v-if="createForm.video_billing_mode !== 'usage_tokens'" class="grid grid-cols-3 gap-3">
             <div>
               <label class="input-label">480p ($/s)</label>
               <input
@@ -1136,25 +1144,27 @@
             <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
               {{ t("admin.groups.videoPricing.modelOverridesTitle") }}
             </p>
-            <div class="mt-3 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 p-3 dark:border-dark-600">
-              <span class="text-sm text-gray-700 dark:text-gray-300">计费模式</span>
-              <select
-                v-model="createForm.video_billing_mode"
-                class="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-dark-600 dark:bg-dark-800"
-              >
-                <option value="local_price">按我方秒单价</option>
-                <option value="upstream_cost">跟随上游成本</option>
-              </select>
-              <span class="text-xs text-gray-500 dark:text-gray-400">
-                {{ createForm.video_billing_mode === 'upstream_cost'
-                  ? '实收 = 上游回传 cost_usd × 视频倍率'
-                  : '实收 = 秒单价 × 时长 × 视频倍率；未配单价时自动跟随上游' }}
-              </span>
+            <div v-if="createForm.platform !== 'grok'" class="my-3 space-y-3">
+              <label class="block">
+                <span class="input-label">{{ t("admin.groups.videoPricing.billingMode") }}</span>
+                <select v-model="createForm.video_billing_mode" class="input">
+                  <option value="local_price">{{ t("admin.groups.videoPricing.localPrice") }}</option>
+                  <option value="upstream_cost">{{ t("admin.groups.videoPricing.upstreamCost") }}</option>
+                  <option v-if="createForm.platform === 'openai' || createForm.platform === 'composite'" value="usage_tokens">{{ t("admin.groups.videoPricing.usageTokens") }}</option>
+                </select>
+              </label>
+              <p class="text-xs text-gray-500">{{ t("admin.groups.videoPricing.billingModeHint") }}</p>
+              <label v-if="createForm.video_billing_mode !== 'usage_tokens'" class="block">
+                <span class="input-label">{{ t("admin.groups.videoPricing.resolutionTiers") }}</span>
+                <input v-model="createForm.video_resolution_tiers_text" class="input font-mono" placeholder="768p:720p, 1024p:1080p" />
+              </label>
+              <p v-if="createForm.video_billing_mode !== 'usage_tokens'" class="text-xs text-gray-500">{{ t("admin.groups.videoPricing.resolutionTiersHint") }}</p>
             </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t("admin.groups.videoPricing.modelOverridesDescription") }}
             </p>
-            <div class="mt-3 space-y-3">
+            <p v-if="createForm.video_billing_mode === 'usage_tokens'" class="mt-3 rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-950 dark:text-blue-200">{{ t("admin.groups.videoPricing.tokenPricingHint") }}</p>
+            <div v-else class="mt-3 space-y-3">
               <div
                 v-for="family in videoModelPriceFamilyRows(createForm.video_model_prices)"
                 :key="family.key"
@@ -1186,7 +1196,7 @@
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t(videoPricingI18nKey("modeHint")) }}
           </p>
-          <div class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+          <div v-if="createForm.video_billing_mode !== 'usage_tokens'" class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             <div class="mb-1 font-medium">
               {{ t(videoPricingI18nKey("finalPricePreview")) }}
             </div>
@@ -2737,6 +2747,14 @@
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-3">
             {{ t(videoPricingI18nKey("description")) }}
           </p>
+          <label class="mb-3 flex items-center gap-2 text-sm">
+            <input v-model="editForm.allow_image_generation" type="checkbox" class="rounded border-gray-300" data-testid="edit-allow-video-generation" />
+            {{ t("admin.groups.videoPricing.allowGeneration") }}
+          </label>
+          <p v-if="editForm.platform === 'openai' || editForm.platform === 'composite'" class="mb-3 text-xs text-gray-500">
+            {{ t("admin.groups.videoPricing.seedanceSetupHint") }}
+            <router-link to="/admin/videos" class="text-indigo-600 hover:underline">{{ t("admin.groups.videoPricing.setupGuide") }}</router-link>
+          </p>
           <div class="mb-4">
             <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
               <input
@@ -2763,7 +2781,7 @@
               placeholder="1"
             />
           </div>
-          <div class="grid grid-cols-3 gap-3">
+          <div v-if="editForm.video_billing_mode !== 'usage_tokens'" class="grid grid-cols-3 gap-3">
             <div>
               <label class="input-label">480p ($/s)</label>
               <input
@@ -2805,10 +2823,27 @@
             <p class="text-sm font-medium text-gray-700 dark:text-gray-300">
               {{ t("admin.groups.videoPricing.modelOverridesTitle") }}
             </p>
+            <div v-if="editForm.platform !== 'grok'" class="my-3 space-y-3">
+              <label class="block">
+                <span class="input-label">{{ t("admin.groups.videoPricing.billingMode") }}</span>
+                <select v-model="editForm.video_billing_mode" class="input">
+                  <option value="local_price">{{ t("admin.groups.videoPricing.localPrice") }}</option>
+                  <option value="upstream_cost">{{ t("admin.groups.videoPricing.upstreamCost") }}</option>
+                  <option v-if="editForm.platform === 'openai' || editForm.platform === 'composite'" value="usage_tokens">{{ t("admin.groups.videoPricing.usageTokens") }}</option>
+                </select>
+              </label>
+              <p class="text-xs text-gray-500">{{ t("admin.groups.videoPricing.billingModeHint") }}</p>
+              <label v-if="editForm.video_billing_mode !== 'usage_tokens'" class="block">
+                <span class="input-label">{{ t("admin.groups.videoPricing.resolutionTiers") }}</span>
+                <input v-model="editForm.video_resolution_tiers_text" class="input font-mono" placeholder="768p:720p, 1024p:1080p" />
+              </label>
+              <p v-if="editForm.video_billing_mode !== 'usage_tokens'" class="text-xs text-gray-500">{{ t("admin.groups.videoPricing.resolutionTiersHint") }}</p>
+            </div>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
               {{ t("admin.groups.videoPricing.modelOverridesDescription") }}
             </p>
-            <div class="mt-3 space-y-3">
+            <p v-if="editForm.video_billing_mode === 'usage_tokens'" class="mt-3 rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-950 dark:text-blue-200">{{ t("admin.groups.videoPricing.tokenPricingHint") }}</p>
+            <div v-else class="mt-3 space-y-3">
               <div
                 v-for="family in videoModelPriceFamilyRows(editForm.video_model_prices)"
                 :key="family.key"
@@ -2840,7 +2875,7 @@
           <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
             {{ t(videoPricingI18nKey("modeHint")) }}
           </p>
-          <div class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+          <div v-if="editForm.video_billing_mode !== 'usage_tokens'" class="mt-2 rounded-lg bg-gray-50 p-3 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
             <div class="mb-1 font-medium">
               {{ t(videoPricingI18nKey("finalPricePreview")) }}
             </div>
@@ -4419,6 +4454,8 @@ import {
 } from "./groupsImagePricing";
 import {
   createVideoModelPricesForm,
+  formatVideoResolutionTiers,
+  parseVideoResolutionTiers,
   grokVideoPriceResolutions,
   serializeVideoModelPrices,
   videoModelPriceFamilyRows,
@@ -4666,6 +4703,28 @@ const platformOptions = computed(() =>
     (option) => !authStore.isSimpleMode || option.value !== "composite",
   ),
 );
+
+const createVideoPreset = ref<"seedance" | null>(null);
+const createPlatformOptions = computed(() => [
+  ...platformOptions.value,
+  { value: "seedance", label: t("admin.groups.videoPricing.seedancePreset") },
+]);
+const createPlatformSelection = computed({
+  get: () => createVideoPreset.value === "seedance" && createForm.platform === "openai" ? "seedance" : createForm.platform,
+  set: (value: string) => {
+    const previousPreset = createVideoPreset.value;
+    createVideoPreset.value = value === "seedance" ? "seedance" : null;
+    createForm.platform = value === "seedance" ? "openai" : value as GroupPlatform;
+    createForm.copy_accounts_from_group_ids = [];
+    if (value === "seedance") {
+      createForm.allow_image_generation = true;
+      createForm.video_billing_mode = "usage_tokens";
+      if (!createForm.name.trim()) createForm.name = "Seedance / BytePlus";
+    } else if (previousPreset === "seedance") {
+      createForm.video_billing_mode = "local_price";
+    }
+  },
+});
 
 const platformFilterOptions = computed(() => [
   { value: "", label: t("admin.groups.allPlatforms") },
@@ -5020,7 +5079,8 @@ const createForm = reactive({
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
   video_model_prices: createVideoModelPricesForm(),
-  video_billing_mode: 'local_price' as 'local_price' | 'upstream_cost',
+  video_billing_mode: 'local_price' as 'local_price' | 'upstream_cost' | 'usage_tokens',
+  video_resolution_tiers_text: '',
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
   search_price_per_1k: null as number | null,
@@ -5388,7 +5448,8 @@ const editForm = reactive({
   video_price_720p: null as number | null,
   video_price_1080p: null as number | null,
   video_model_prices: createVideoModelPricesForm(),
-  video_billing_mode: 'local_price' as 'local_price' | 'upstream_cost',
+  video_billing_mode: 'local_price' as 'local_price' | 'upstream_cost' | 'usage_tokens',
+  video_resolution_tiers_text: '',
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
   search_price_per_1k: null as number | null,
@@ -5836,6 +5897,7 @@ const closeCreateModal = () => {
   createForm.name = "";
   createForm.description = "";
   createForm.i18n = {};
+  createVideoPreset.value = null;
   createForm.platform = "anthropic";
   createForm.rate_multiplier = 1.0;
   createForm.is_exclusive = false;
@@ -5859,6 +5921,8 @@ const closeCreateModal = () => {
   createForm.video_price_720p = null;
   createForm.video_price_1080p = null;
   createForm.video_model_prices = createVideoModelPricesForm();
+  createForm.video_billing_mode = "local_price";
+  createForm.video_resolution_tiers_text = "";
   createForm.long_context_pricing_enabled = true;
   createForm.force_openai_fast = false;
   createForm.free_openai_fast = false;
@@ -5971,10 +6035,17 @@ const handleCreateGroup = async () => {
     appStore.showError(t("admin.groups.modelAllowlist.emptySelectionError"));
     return;
   }
+  try {
+    parseVideoResolutionTiers(createForm.video_resolution_tiers_text);
+  } catch {
+    appStore.showError(t("admin.groups.videoPricing.invalidResolutionTiers"));
+    return;
+  }
   submitting.value = true;
   try {
     const {
       video_model_prices: _createFormVideoModelPrices,
+      video_resolution_tiers_text: _createFormVideoTiersText,
       ...createGroupForm
     } = createForm;
     const videoModelPrices = serializeVideoModelPrices(
@@ -5983,6 +6054,7 @@ const handleCreateGroup = async () => {
     // 构建请求数据，包含模型路由配置
     const requestData = {
       ...createGroupForm,
+      video_resolution_tiers: parseVideoResolutionTiers(createForm.video_resolution_tiers_text),
       force_openai_fast: normalizeGroupOpenAIFast(
         createForm.platform,
         createForm.force_openai_fast,
@@ -6158,6 +6230,8 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.video_model_prices = createVideoModelPricesForm(
     group.video_model_prices,
   );
+  editForm.video_billing_mode = group.video_billing_mode ?? "local_price";
+  editForm.video_resolution_tiers_text = formatVideoResolutionTiers(group.video_resolution_tiers);
   editForm.web_search_price_per_call = group.web_search_price_per_call ?? null;
   editForm.search_price_per_1k = group.search_price_per_1k ?? null;
   editForm.audio_realtime_price_per_min = group.audio_realtime_price_per_min ?? null;
@@ -6269,6 +6343,8 @@ const closeEditModal = () => {
   editForm.video_price_720p = null;
   editForm.video_price_1080p = null;
   editForm.video_model_prices = createVideoModelPricesForm();
+  editForm.video_billing_mode = "local_price";
+  editForm.video_resolution_tiers_text = "";
   editForm.long_context_pricing_enabled = true;
   editForm.force_openai_fast = false;
   editForm.free_openai_fast = false;
@@ -6322,11 +6398,19 @@ const handleUpdateGroup = async () => {
     return;
   }
 
+  try {
+    parseVideoResolutionTiers(editForm.video_resolution_tiers_text);
+  } catch {
+    appStore.showError(t("admin.groups.videoPricing.invalidResolutionTiers"));
+    return;
+  }
   submitting.value = true;
   try {
     // 转换 fallback_group_id: null -> 0 (后端使用 0 表示清除)
+    const { video_resolution_tiers_text: _editFormVideoTiersText, ...editGroupForm } = editForm;
     const payload = {
-      ...editForm,
+      ...editGroupForm,
+      video_resolution_tiers: parseVideoResolutionTiers(editForm.video_resolution_tiers_text),
       force_openai_fast: normalizeGroupOpenAIFast(
         editForm.platform,
         editForm.force_openai_fast,
@@ -6791,7 +6875,7 @@ watch(
       createForm.require_oauth_only = false;
       createForm.require_privacy_set = false;
     }
-    createForm.allow_image_generation = defaultAllowImageGenerationForPlatform(newVal);
+    createForm.allow_image_generation = createVideoPreset.value === "seedance" || defaultAllowImageGenerationForPlatform(newVal);
     resetDisabledBatchImagePricing(createForm);
     resetModelAllowlistState(createModelAllowlistState);
     loadModelAllowlistCandidates("create", 0, newVal);

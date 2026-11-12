@@ -82,6 +82,14 @@ func cloneGroupVideoModelPrices(value map[string]map[string]float64) map[string]
 	return cloned
 }
 
+func cloneGroupVideoResolutionTiers(value map[string]string) map[string]string {
+	cloned := make(map[string]string, len(value))
+	for source, target := range value {
+		cloned[source] = target
+	}
+	return cloned
+}
+
 func cloneGroupMessagesDispatchModelConfig(value OpenAIMessagesDispatchModelConfig) OpenAIMessagesDispatchModelConfig {
 	cloned := value
 	if value.ExactModelMappings != nil {
@@ -131,6 +139,8 @@ func cloneGroupForDuplicate(source *Group, operationID string) *Group {
 		VideoPrice720P:                  cloneGroupValuePointer(source.VideoPrice720P),
 		VideoPrice1080P:                 cloneGroupValuePointer(source.VideoPrice1080P),
 		VideoModelPrices:                cloneGroupVideoModelPrices(source.VideoModelPrices),
+		VideoBillingMode:                source.VideoBillingMode,
+		VideoResolutionTiers:            cloneGroupVideoResolutionTiers(source.VideoResolutionTiers),
 		WebSearchPricePerCall:           cloneGroupValuePointer(source.WebSearchPricePerCall),
 		SearchPricePer1k:                cloneGroupValuePointer(source.SearchPricePer1k),
 		AudioRealtimePricePerMin:        cloneGroupValuePointer(source.AudioRealtimePricePerMin),

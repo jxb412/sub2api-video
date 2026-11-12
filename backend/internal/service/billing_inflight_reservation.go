@@ -71,7 +71,7 @@ type InflightReservation struct {
 	requestID string
 	amount    float64
 	ttl       time.Duration
-	// scopes 是同一金额在订阅 / API Key 维度登记的预留（与余额维度共用 requestID），不续期。
+	// scopes share the request ID and renewal lifetime with the balance reservation.
 	scopeCache InflightScopeReservationCache
 	scopes     []string
 
@@ -174,15 +174,25 @@ func (r *InflightReservation) startRenewal(renewer InflightBalanceReservationRen
 			case <-r.stopRenew:
 				return
 			case <-ticker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), inflightReservationRenewTimeout)
-				alive, err := renewer.RenewInflightBalance(ctx, r.userID, r.requestID, r.ttl)
-				cancel()
-				if err != nil {
-					logger.LegacyPrintf("service.billing_cache", "Warning: inflight reservation renew failed for user %d: %v", r.userID, err)
-					continue
+				if renewer != nil {
+					ctx, cancel := context.WithTimeout(context.Background(), inflightReservationRenewTimeout)
+					alive, err := renewer.RenewInflightBalance(ctx, r.userID, r.requestID, r.ttl)
+					cancel()
+					if err != nil {
+						logger.LegacyPrintf("service.billing_cache", "Warning: inflight reservation renew failed for user %d: %v", r.userID, err)
+					} else if !alive && len(r.scopes) == 0 {
+						return
+					}
 				}
-				if !alive {
-					return
+				for _, scope := range r.scopes {
+					ctx, cancel := context.WithTimeout(context.Background(), inflightReservationRenewTimeout)
+					// Reusing the same ID updates expiry and amount; it does not add
+					// another reservation or debit quota/balance.
+					_, err := r.scopeCache.ReserveInflightScope(ctx, scope, r.requestID, r.amount, r.ttl)
+					cancel()
+					if err != nil {
+						logger.LegacyPrintf("service.billing_cache", "Warning: inflight reservation renew failed for %s: %v", scope, err)
+					}
 				}
 			}
 		}

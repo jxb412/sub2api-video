@@ -2210,7 +2210,23 @@
           </div>
           <p class="input-hint">{{ t('admin.accounts.openai.endpointCapabilitiesDesc') }}</p>
         </div>
+        <div v-if="openAIEndpointCapabilities.includes('minimax_video')" class="space-y-2" data-testid="minimax-video-protocol-settings">
+          <label class="input-label" for="edit-minimax-video-protocol">{{ t('admin.accounts.minimaxVideo.protocol') }}</label>
+          <select id="edit-minimax-video-protocol" :value="minimaxVideoProtocol" class="input" data-testid="minimax-video-protocol" @change="changeMinimaxVideoProtocol">
+            <option value="ll2">{{ t('admin.accounts.minimaxVideo.ll2') }}</option>
+            <option value="getoken">{{ t('admin.accounts.minimaxVideo.getoken') }}</option>
+          </select>
+          <p class="input-hint">{{ t('admin.accounts.minimaxVideo.protocolChangeHint') }}</p>
+          <p v-if="minimaxVideoProtocol === 'll2'" class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.accounts.minimaxVideo.ll2BillingHint') }}</p>
+        </div>
       </div>
+
+      <VideoExecutionPolicyFields
+        v-if="account?.platform === 'openai' && account?.type === 'apikey' && (openAIEndpointCapabilities.includes('minimax_video') || openAIEndpointCapabilities.includes('seedance'))"
+        v-model="videoExecutionPolicy"
+        :seedance="openAIEndpointCapabilities.includes('seedance') && !openAIEndpointCapabilities.includes('minimax_video')"
+        :protocol="minimaxVideoProtocol"
+      />
 
       <!-- OpenAI APIKey images: backfill b64_json from url -->
       <div
@@ -3362,6 +3378,7 @@
         :groups="selectableGroups"
         :platform="account?.platform"
         :mixed-scheduling="mixedScheduling"
+        :minimax-video-capable="account?.type === 'apikey' && openAIEndpointCapabilities.includes('minimax_video')"
         data-tour="account-form-groups"
       />
 
@@ -3419,6 +3436,10 @@
 </template>
 
 <script setup lang="ts">
+import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities, readOpenAIEndpointCapabilities, hasValidVideoProviderURL } from './openAIEndpointCapabilities'
+import VideoExecutionPolicyFields from './VideoExecutionPolicyFields.vue'
+import { applyVideoExecutionPolicy, readVideoExecutionPolicy, type VideoExecutionPolicy } from './videoExecutionPolicy'
+import { applyMinimaxVideoProtocol, minimaxVideoProtocolBaseURL, readMinimaxVideoProtocol, type MinimaxVideoProtocol } from './minimaxVideoProtocol'
 import { ref, reactive, computed, watch, nextTick, onBeforeUnmount, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -4203,6 +4224,9 @@ const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 const openAIImagesUrlToB64JsonEnabled = ref(false)
 const openAIImageSizeTiers = ref<OpenAIImageSizeTier[]>([...OPENAI_IMAGE_SIZE_TIERS])
 const openAIEndpointCapabilities = ref<OpenAIEndpointCapability[]>(['chat_completions', 'embeddings'])
+const minimaxVideoProtocol = ref<MinimaxVideoProtocol>('getoken')
+const videoExecutionPolicy = ref<VideoExecutionPolicy | null>(null)
+const minimaxVideoProtocolChanged = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
@@ -4365,37 +4389,14 @@ const openAITextEndpointCapabilityLabel = computed(() => {
 const openAIEndpointCapabilityOptions = computed<{ value: OpenAIEndpointCapability; label: string }[]>(() => [
   { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
   { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') },
-  { value: 'seedance', label: 'Seedance (Ark)' }
+  { value: 'seedance', label: 'Seedance / BytePlus' },
+  { value: 'minimax_video', label: 'MiniMax H3' }
 ])
 const openAITextGenerationCapabilityEnabled = computed(() =>
   openAIEndpointCapabilities.value.includes('chat_completions')
 )
 
-const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
-  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'seedance']
-  const selected = allowed.filter((value) => values.includes(value))
-  return selected.length > 0 ? selected : ['chat_completions', 'embeddings'] as OpenAIEndpointCapability[]
-}
 
-const readOpenAIEndpointCapabilities = (credentials?: Record<string, unknown>): OpenAIEndpointCapability[] => {
-  const raw = credentials?.openai_capabilities
-  if (Array.isArray(raw)) {
-    return normalizeOpenAIEndpointCapabilities(
-      raw.filter((value): value is OpenAIEndpointCapability =>
-        value === 'chat_completions' || value === 'embeddings' || value === 'seedance'
-      )
-    )
-  }
-  if (raw !== null && typeof raw === 'object') {
-    const capabilityMap = raw as Record<string, unknown>
-    return normalizeOpenAIEndpointCapabilities(
-      openAIEndpointCapabilityOptions.value
-        .map((option) => option.value)
-        .filter((value) => capabilityMap[value] === true)
-    )
-  }
-  return ['chat_completions', 'embeddings']
-}
 
 const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, event?: Event) => {
   if (openAIEndpointCapabilities.value.includes(capability)) {
@@ -4419,12 +4420,22 @@ const toggleOpenAIEndpointCapability = (capability: OpenAIEndpointCapability, ev
 }
 
 const applyOpenAIEndpointCapabilities = (credentials: Record<string, unknown>) => {
+  applyMinimaxVideoProtocol(credentials, openAIEndpointCapabilities.value.includes('minimax_video'), minimaxVideoProtocol.value, minimaxVideoProtocolChanged.value)
   const capabilities = normalizeOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
-  if (capabilities.length === 2 && !capabilities.includes('seedance')) {
+  if (isDefaultOpenAIEndpointCapabilities(capabilities)) {
     delete credentials.openai_capabilities
     return
   }
   credentials.openai_capabilities = capabilities
+}
+
+function changeMinimaxVideoProtocol(event: Event) {
+  const protocol = (event.target as HTMLSelectElement).value as MinimaxVideoProtocol
+  if (protocol === minimaxVideoProtocol.value) return
+  minimaxVideoProtocol.value = protocol
+  minimaxVideoProtocolChanged.value = true
+  editApiKey.value = ''
+  editBaseUrl.value = minimaxVideoProtocolBaseURL(protocol, editBaseUrl.value)
 }
 const normalizeOpenAIResponsesMode = (mode: unknown): OpenAIResponsesMode => {
   if (mode === 'force_responses' || mode === 'force_chat_completions') {
@@ -4701,6 +4712,9 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
+  minimaxVideoProtocol.value = readMinimaxVideoProtocol(newAccount.credentials as Record<string, unknown> | undefined)
+  minimaxVideoProtocolChanged.value = false
+  videoExecutionPolicy.value = readVideoExecutionPolicy(newAccount.extra as Record<string, unknown> | undefined)
   openAICompactModelMappings.value = []
   openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
   openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -5678,6 +5692,10 @@ const submitUpdateAccount = async (accountID: number, updatePayload: Record<stri
 
 const handleSubmit = async () => {
   if (!props.account) return
+  if (props.account.platform === 'openai' && props.account.type === 'apikey' && !hasValidVideoProviderURL(openAIEndpointCapabilities.value, editBaseUrl.value)) {
+    appStore.showError(t('admin.groups.videoPricing.providerURLRequired'))
+    return
+  }
   const accountID = props.account.id
 
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
@@ -5766,7 +5784,7 @@ const handleSubmit = async () => {
       // 若后端尚未升级（无 credentials_status），回退读旧结构 currentCredentials.api_key。
       // 两者都无才报错。
       const hasExistingApiKey =
-        props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key)
+        !minimaxVideoProtocolChanged.value && (props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key))
       if (editApiKey.value.trim()) {
         newCredentials.api_key = editApiKey.value.trim()
       } else if (!hasExistingApiKey) {
@@ -6295,6 +6313,7 @@ const handleSubmit = async () => {
         }
 		}
 		applyOpenAIImageSizeTiersToExtra(newExtra, openAIImageSizeTiers.value)
+      applyVideoExecutionPolicy(newExtra, props.account.type === 'apikey' && (openAIEndpointCapabilities.value.includes('minimax_video') || openAIEndpointCapabilities.value.includes('seedance')), videoExecutionPolicy.value)
 		if (autoPause5hThreshold.value != null && autoPause5hThreshold.value > 0) {
 			newExtra.auto_pause_5h_threshold = autoPause5hThreshold.value / 100
 		} else {

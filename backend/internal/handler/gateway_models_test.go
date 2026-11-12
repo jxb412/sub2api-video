@@ -407,7 +407,14 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 				for _, model := range got.Data {
 					require.Equal(t, "model", model.Object, model.ID)
 					require.Positive(t, model.Created, model.ID)
-					require.Equal(t, "openai", model.OwnedBy, model.ID)
+					wantOwner := "openai"
+					switch model.ID {
+					case "MiniMax-H3":
+						wantOwner = "minimax"
+					case "seedance-1-0-pro-250528", "seedance-1-0-lite-t2v-250428", "seedance-1-0-lite-i2v-250428":
+						wantOwner = "byteplus"
+					}
+					require.Equal(t, wantOwner, model.OwnedBy, model.ID)
 					require.Empty(t, model.CreatedAt, model.ID)
 				}
 				if tt.config.Enabled {

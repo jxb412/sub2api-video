@@ -695,6 +695,46 @@ func TestEmbeddedFrontendBypassesBareVideoAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestEmbeddedFrontendVideoPageDoesNotShadowAPI(t *testing.T) {
+	server, err := NewFrontendServer(&mockSettingsProvider{settings: map[string]string{"site_name": "Video test"}})
+	require.NoError(t, err)
+	for name, handler := range map[string]gin.HandlerFunc{
+		"settings frontend": server.Middleware(),
+		"legacy frontend":   ServeEmbeddedFrontend(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(handler)
+			router.POST("/videos", func(c *gin.Context) { c.JSON(http.StatusAccepted, gin.H{"id": "gateway-task"}) })
+			router.GET("/videos/:id", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"id": c.Param("id")}) })
+			router.GET("/videos/:id/content", func(c *gin.Context) { c.Data(http.StatusOK, "video/mp4", []byte("video-data")) })
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				writer := httptest.NewRecorder()
+				router.ServeHTTP(writer, httptest.NewRequest(method, "/videos", nil))
+				require.Equal(t, http.StatusOK, writer.Code, method)
+				require.Contains(t, writer.Header().Get("Content-Type"), "text/html", method)
+				if method == http.MethodGet {
+					require.Contains(t, writer.Body.String(), `id="app"`)
+				}
+			}
+			writer := httptest.NewRecorder()
+			router.ServeHTTP(writer, httptest.NewRequest(http.MethodPost, "/videos", strings.NewReader(`{}`)))
+			require.Equal(t, http.StatusAccepted, writer.Code)
+			require.Contains(t, writer.Body.String(), "gateway-task")
+			writer = httptest.NewRecorder()
+			router.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/videos/task-123", nil))
+			require.JSONEq(t, `{"id":"task-123"}`, writer.Body.String())
+			writer = httptest.NewRecorder()
+			router.ServeHTTP(writer, httptest.NewRequest(http.MethodGet, "/videos/task-123/content", nil))
+			require.Equal(t, "video/mp4", writer.Header().Get("Content-Type"))
+			require.Equal(t, "video-data", writer.Body.String())
+			writer = httptest.NewRecorder()
+			router.ServeHTTP(writer, httptest.NewRequest(http.MethodDelete, "/videos", nil))
+			require.Equal(t, http.StatusNotFound, writer.Code, "unsupported API methods must not receive the SPA")
+		})
+	}
+}
+
 func TestEmbeddedFrontendBypassesBareAPIAliases(t *testing.T) {
 	for _, path := range []string{
 		"/chat/completions",

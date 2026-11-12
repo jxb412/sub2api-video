@@ -1555,6 +1555,7 @@
 </template>
 
 <script setup lang="ts">
+import { normalizeOpenAIEndpointCapabilities, isDefaultOpenAIEndpointCapabilities } from './openAIEndpointCapabilities'
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -1891,7 +1892,8 @@ const openAIEndpointCapabilityOptions = computed<
 >(() => [
   { value: 'chat_completions', label: openAITextEndpointCapabilityLabel.value },
   { value: 'embeddings', label: t('admin.accounts.openai.capabilityEmbeddings') },
-  { value: 'seedance', label: 'Seedance (Ark)' }
+  { value: 'seedance', label: 'Seedance / BytePlus' },
+  { value: 'minimax_video', label: 'MiniMax H3' }
 ])
 const openAITextGenerationCapabilityEnabled = computed(() =>
   openAIEndpointCapabilities.value.includes('chat_completions')
@@ -1900,11 +1902,6 @@ const openAIResponsesModeApplicable = computed(
   () => !enableOpenAIEndpointCapabilities.value || openAITextGenerationCapabilityEnabled.value
 )
 
-const normalizeOpenAIEndpointCapabilities = (values: OpenAIEndpointCapability[]) => {
-  const allowed: OpenAIEndpointCapability[] = ['chat_completions', 'embeddings', 'seedance']
-  const selected = allowed.filter((value) => values.includes(value))
-  return selected.length > 0 ? selected : ['chat_completions', 'embeddings'] as OpenAIEndpointCapability[]
-}
 
 const toggleOpenAIEndpointCapability = (
   capability: OpenAIEndpointCapability,
@@ -2106,7 +2103,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
 
   if (applyOpenAIEndpointCapabilities) {
     credentials.openai_capabilities =
-      openAIEndpointCapabilities.value.length === 2 && !openAIEndpointCapabilities.value.includes('seedance')
+      isDefaultOpenAIEndpointCapabilities(openAIEndpointCapabilities.value)
         ? null
         : [...openAIEndpointCapabilities.value]
     credentialsChanged = true

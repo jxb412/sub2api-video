@@ -1935,7 +1935,7 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 	if capability == OpenAIEndpointCapabilitySeedance {
 		configured, _ := a.openAIEndpointCapabilitySet()
 		return configured["seedance"] && a.Platform == PlatformOpenAI && a.Type == AccountTypeAPIKey &&
-			strings.TrimSpace(a.GetCredential("base_url")) != ""
+			strings.TrimSpace(a.GetCredential("base_url")) != "" && strings.TrimSpace(a.GetCredential("api_key")) != ""
 	}
 	// MiniMax-style video providers (H3 & friends) are plain API-key accounts.
 	// They need an explicit capability flag plus a base URL and key, and they are
@@ -1963,19 +1963,10 @@ func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapa
 		}
 		// MiniMax video accounts may be registered on either platform; only the
 		// credential shape is authoritative here.
-		return a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream
+		return (a.Platform == PlatformOpenAI || a.Platform == PlatformMiniMax) && (a.Type == AccountTypeAPIKey || a.Type == AccountTypeUpstream)
 	}
 	if capability == "" {
 		return true
-	}
-	// The video endpoints are scheduled through the shared media capability, so
-	// a MiniMax video account must satisfy it even though it is not a Grok one.
-	if capability == OpenAIEndpointCapabilityGrokMediaGeneration {
-		configured, _ := a.openAIEndpointCapabilitySet()
-		if configured["minimax_video"] {
-			return strings.TrimSpace(a.GetCredential("base_url")) != "" &&
-				strings.TrimSpace(a.GetCredential("api_key")) != ""
-		}
 	}
 	if !a.IsOpenAICompatible() {
 		return false
